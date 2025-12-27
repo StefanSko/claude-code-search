@@ -1,0 +1,61 @@
+[project]
+name = "claude-code-search"
+version = "0.1.0"
+description = "CLI tool to search across Claude Code sessions with full-text search and web UI"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    # CLI
+    "click>=8.0",
+    "click-default-group>=1.2",
+    "questionary>=2.0",
+    "rich>=13.0",
+
+    # Database
+    "duckdb>=1.0",
+
+    # HTTP client (for web sessions)
+    "httpx>=0.27",
+
+    # Web UI server
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-httpx>=0.30",
+    "pytest-asyncio>=0.23",
+    "httpx>=0.27",
+    "syrupy>=4.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+claude-code-search = "claude_code_search.cli:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/claude_code_search"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
