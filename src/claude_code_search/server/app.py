@@ -64,6 +64,9 @@ def create_app(index: SearchIndex) -> FastAPI:
         session: str | None = Query(None, description="Filter by session ID"),
         since: str | None = Query(None, description="Messages after this date"),
         until: str | None = Query(None, description="Messages before this date"),
+        content_type: str | None = Query(
+            None, description="Filter by content type (text/tool/tool_use/tool_result)"
+        ),
         limit: int = Query(20, ge=1, le=100, description="Max results"),
     ) -> dict[str, Any]:
         """Full-text search with filters."""
@@ -74,6 +77,7 @@ def create_app(index: SearchIndex) -> FastAPI:
             session_id=session,
             since=since,
             until=until,
+            content_type=content_type,
             limit=limit,
         )
         return {

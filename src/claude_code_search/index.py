@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS messages (
     thinking_content TEXT,
     cost_usd DOUBLE,
     duration_ms INTEGER,
-    searchable_text TEXT
+    searchable_text TEXT,
+    content_type VARCHAR,
+    tool_summary TEXT
 )
 """
 
@@ -126,8 +128,9 @@ class SearchIndex:
                 """
                 INSERT OR REPLACE INTO messages
                 (message_id, session_id, sequence_num, role, timestamp,
-                 text_content, thinking_content, cost_usd, duration_ms, searchable_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 text_content, thinking_content, cost_usd, duration_ms, searchable_text,
+                 content_type, tool_summary)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     msg.message_id,
@@ -140,6 +143,8 @@ class SearchIndex:
                     msg.cost_usd,
                     msg.duration_ms,
                     msg.searchable_text,
+                    msg.content_type,
+                    msg.tool_summary,
                 ],
             )
 
@@ -192,6 +197,7 @@ class SearchIndex:
         session_id: str | None = None,
         since: str | None = None,
         until: str | None = None,
+        content_type: str | None = None,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Execute a full-text search query with optional filters."""
@@ -225,6 +231,14 @@ class SearchIndex:
         if until:
             sql += " AND m.timestamp <= ?"
             params.append(until)
+
+        if content_type:
+            if content_type == "tool":
+                # "tool" matches both tool_use and tool_result
+                sql += " AND m.content_type IN ('tool_use', 'tool_result')"
+            else:
+                sql += " AND m.content_type = ?"
+                params.append(content_type)
 
         sql += " ORDER BY score DESC LIMIT ?"
         params.append(limit)

@@ -105,6 +105,31 @@
                         </div>
                     </div>
 
+                    <!-- Content Type Filter -->
+                    <div>
+                        <h3 class="text-sm font-semibold text-gray-400 uppercase mb-2">Content</h3>
+                        <div class="space-y-1">
+                            <label class="flex items-center gap-2 text-sm cursor-pointer">
+                                <input type="radio" name="content_type" value=""
+                                       x-model="filters.contentType" @change="search()"
+                                       class="bg-gray-700 border-gray-600">
+                                <span>All</span>
+                            </label>
+                            <label class="flex items-center gap-2 text-sm cursor-pointer">
+                                <input type="radio" name="content_type" value="text"
+                                       x-model="filters.contentType" @change="search()"
+                                       class="bg-gray-700 border-gray-600">
+                                <span>Text</span>
+                            </label>
+                            <label class="flex items-center gap-2 text-sm cursor-pointer">
+                                <input type="radio" name="content_type" value="tool"
+                                       x-model="filters.contentType" @change="search()"
+                                       class="bg-gray-700 border-gray-600">
+                                <span>Tool</span>
+                            </label>
+                        </div>
+                    </div>
+
                     <!-- Stats Summary -->
                     <div class="bg-gray-800 rounded p-3">
                         <h3 class="text-sm font-semibold text-gray-400 uppercase mb-2">Index Stats</h3>
@@ -166,9 +191,13 @@
                                       class="text-xs text-gray-500 ml-auto"
                                       x-text="'Score: ' + (result.score?.toFixed(3) || '')"></span>
                             </div>
-                            <p class="text-sm text-gray-300 line-clamp-3"
-                               x-html="highlightMatches(result.text_content?.slice(0, 300) || '', query)">
+                            <p class="text-sm line-clamp-3"
+                               :class="result.text_content?.trim() ? 'text-gray-300' : 'text-yellow-400 italic'"
+                               x-html="highlightMatches(result.text_content?.slice(0, 300) || result.tool_summary || '(empty)', query)">
                             </p>
+                            <span x-show="result.content_type && result.content_type !== 'text'"
+                                  class="inline-block mt-1 px-2 py-0.5 rounded text-xs font-medium bg-yellow-900 text-yellow-300"
+                                  x-text="result.content_type"></span>
                             <p x-show="result.project_directory"
                                class="mt-2 text-xs text-gray-500">
                                 📁 <span x-text="result.project_directory"></span>
@@ -243,9 +272,21 @@
                                 </div>
                             </div>
 
-                            <!-- Text Content -->
+                            <!-- Text Content or Tool Summary -->
                             <div class="prose prose-invert prose-sm max-w-none">
-                                <pre class="whitespace-pre-wrap text-sm" x-text="msg.text_content"></pre>
+                                <template x-if="msg.text_content?.trim()">
+                                    <pre class="whitespace-pre-wrap text-sm" x-text="msg.text_content"></pre>
+                                </template>
+                                <template x-if="!msg.text_content?.trim() && msg.tool_summary">
+                                    <div class="text-yellow-400 italic text-sm">
+                                        <span class="inline-block px-2 py-0.5 rounded text-xs font-medium bg-yellow-900 text-yellow-300 mr-2"
+                                              x-text="msg.content_type"></span>
+                                        <span x-text="msg.tool_summary"></span>
+                                    </div>
+                                </template>
+                                <template x-if="!msg.text_content?.trim() && !msg.tool_summary">
+                                    <div class="text-gray-500 italic text-sm">(no content)</div>
+                                </template>
                             </div>
                         </div>
                     </template>
@@ -315,6 +356,7 @@
                 results: [],
                 filters: {
                     role: '',
+                    contentType: '',
                     sessions: []
                 },
                 sessions: [],
@@ -343,6 +385,9 @@
                         const params = new URLSearchParams({ q: this.query });
                         if (this.filters.role) {
                             params.set('role', this.filters.role);
+                        }
+                        if (this.filters.contentType) {
+                            params.set('content_type', this.filters.contentType);
                         }
                         if (this.filters.sessions.length === 1) {
                             params.set('session', this.filters.sessions[0]);

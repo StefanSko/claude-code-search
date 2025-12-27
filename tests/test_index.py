@@ -135,3 +135,115 @@ class TestSearchIndexMultipleSessions:
 
         session_ids = {r["session_id"] for r in results}
         assert len(session_ids) == 2
+
+
+class TestContentTypeFilter:
+    """Tests for content_type filtering in search."""
+
+    def test_search_with_content_type_text(self, search_index: SearchIndex) -> None:
+        """Filter search results by content_type='text'."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "Python code"}},
+            {
+                "uuid": "msg-2",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "Write", "input": {"path": "python.py"}},
+                    ],
+                },
+            },
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        results = search_index.search("Python", content_type="text")
+
+        assert len(results) == 1
+        assert results[0]["content_type"] == "text"
+
+    def test_search_with_content_type_tool(self, search_index: SearchIndex) -> None:
+        """Filter search results by content_type='tool' (matches tool_use and tool_result)."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "Create CLI tool"}},
+            {
+                "uuid": "msg-2",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "npm install"}},
+                    ],
+                },
+                # Add thinking content so it's searchable
+                "thinking": "I need to run the CLI command",
+            },
+            {
+                "uuid": "msg-3",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "Installed"},
+                        # Add text so it appears in search
+                        {"type": "text", "text": "CLI tool installed successfully"},
+                    ],
+                },
+            },
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        # Search for CLI - msg-2 has it in thinking, msg-3 has it in text
+        results = search_index.search("CLI", content_type="tool")
+
+        # Only msg-2 has content_type='tool_use' (msg-3 has text so it's 'text' type)
+        assert len(results) >= 1
+        assert all(r["content_type"] in ("tool_use", "tool_result") for r in results)
+
+
+class TestContextWithToolSummary:
+    """Tests for message context including tool_summary."""
+
+    def test_context_includes_content_type(self, indexed_search: SearchIndex) -> None:
+        """Context messages should include content_type field."""
+        result = indexed_search.get_message_with_context("msg-002", before=1, after=1)
+
+        assert result is not None
+        for msg in result["context"]:
+            assert "content_type" in msg
+
+    def test_context_includes_tool_summary(self, indexed_search: SearchIndex) -> None:
+        """Context messages with tools should include tool_summary field."""
+        result = indexed_search.get_message_with_context("msg-002", before=1, after=1)
+
+        assert result is not None
+        # msg-002 has a Write tool, should have tool_summary
+        target = result["message"]
+        assert target["tool_summary"] is not None
+        assert "Write" in target["tool_summary"]
+
+    def test_context_boundary_first_message(self, indexed_search: SearchIndex) -> None:
+        """Context for first message should only have 'next' messages."""
+        result = indexed_search.get_message_with_context("msg-001", before=2, after=2)
+
+        assert result is not None
+        context_seqs = [m["sequence_num"] for m in result["context"]]
+        # First message is seq=0, should have 0, 1, 2 (no negative sequences)
+        assert min(context_seqs) == 0
+        assert 0 in context_seqs
+
+    def test_context_boundary_last_message(self, indexed_search: SearchIndex) -> None:
+        """Context for last message should only have 'prev' messages."""
+        result = indexed_search.get_message_with_context("msg-005", before=2, after=2)
+
+        assert result is not None
+        context_seqs = [m["sequence_num"] for m in result["context"]]
+        # Last message is seq=4, should have 2, 3, 4 (no seq > 4)
+        assert max(context_seqs) == 4
+        assert 4 in context_seqs
+
+    def test_context_target_always_included(self, indexed_search: SearchIndex) -> None:
+        """Target message should always be in context list."""
+        for msg_id in ["msg-001", "msg-002", "msg-003", "msg-004", "msg-005"]:
+            result = indexed_search.get_message_with_context(msg_id, before=1, after=1)
+
+            assert result is not None
+            context_ids = [m["message_id"] for m in result["context"]]
+            assert msg_id in context_ids
