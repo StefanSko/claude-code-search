@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Claude Code Search</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              display: ["Space Grotesk", "sans-serif"],
+              body: ["IBM Plex Sans", "sans-serif"],
+            },
+          },
+        },
+      };
+    </script>
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Grotesk:wght@500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --ink: #14110f;
+        --paper: #f5f1ea;
+        --accent: #c24c1a;
+        --accent-deep: #7a2f0f;
+        --sea: #1f6e6a;
+        --sea-ink: #0d4b48;
+        --fog: #efe8dc;
+      }
+
+      body {
+        font-family: "IBM Plex Sans", sans-serif;
+        background: radial-gradient(circle at top, #fef7ed 0%, #f3eadb 45%, #efe8dc 100%);
+        color: var(--ink);
+      }
+
+      .noise {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160' viewBox='0 0 160 160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.07'/%3E%3C/svg%3E");
+      }
+
+      .glass {
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(16px);
+        border: 1px solid rgba(20, 17, 15, 0.08);
+      }
+
+      .pulse {
+        animation: pulseFade 1.4s ease-in-out infinite;
+      }
+
+      @keyframes pulseFade {
+        0%,
+        100% {
+          opacity: 0.4;
+        }
+        50% {
+          opacity: 1;
+        }
+      }
+
+      [x-cloak] {
+        display: none;
+      }
+    </style>
+    <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  </head>
+  <body class="min-h-screen">
+    <div class="noise fixed inset-0 pointer-events-none"></div>
+
+    <main class="relative z-10">
+      <section class="px-6 py-10 max-w-6xl mx-auto">
+        <div class="glass rounded-3xl p-8 shadow-2xl">
+          <div class="flex flex-col gap-6">
+            <header class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+              <div>
+                <p class="font-display text-sm uppercase tracking-[0.3em] text-[var(--accent-deep)]">
+                  Claude Code Search
+                </p>
+                <h1 class="font-display text-3xl md:text-4xl text-[var(--ink)]">
+                  Search every transcript, instantly.
+                </h1>
+              </div>
+              <div class="flex items-center gap-4">
+                <div class="rounded-2xl bg-[var(--fog)] px-4 py-2">
+                  <p class="text-xs uppercase tracking-widest text-[var(--sea-ink)]">Indexed</p>
+                  <p class="text-lg font-semibold" x-text="stats.message_count || 0"></p>
+                </div>
+                <div class="rounded-2xl bg-[var(--fog)] px-4 py-2">
+                  <p class="text-xs uppercase tracking-widest text-[var(--sea-ink)]">Sessions</p>
+                  <p class="text-lg font-semibold" x-text="stats.session_count || 0"></p>
+                </div>
+              </div>
+            </header>
+
+            <div x-data="searchApp()" x-init="init()" class="grid gap-6 lg:grid-cols-[1fr_320px]">
+              <section class="order-2 lg:order-1">
+                <div class="rounded-2xl bg-white/70 p-5 shadow-sm">
+                  <div class="flex flex-col gap-3">
+                    <label class="text-sm font-semibold">Search query</label>
+                    <div class="flex flex-col md:flex-row gap-3">
+                      <input
+                        x-model="query"
+                        @keydown.enter.prevent="search()"
+                        class="flex-1 rounded-xl border border-black/10 px-4 py-3 text-base focus:outline-none focus:ring-2 focus:ring-[var(--accent)]"
+                        placeholder="Search across sessions, tools, and decisions..."
+                      />
+                      <button
+                        @click="search()"
+                        class="rounded-xl bg-[var(--accent)] px-6 py-3 text-white font-semibold shadow-lg shadow-orange-200 hover:bg-[var(--accent-deep)] transition"
+                      >
+                        Search
+                      </button>
+                    </div>
+                    <div class="text-xs text-black/50">
+                      Tip: use quotes for exact phrases and AND/OR for boolean search.
+                    </div>
+                  </div>
+                </div>
+
+                <div class="mt-6 flex items-center gap-3 text-sm text-black/60">
+                  <div class="flex items-center gap-2">
+                    <span class="h-2 w-2 rounded-full bg-[var(--sea)]"></span>
+                    <span x-text="filteredResults().length + ' results'">0 results</span>
+                  </div>
+                  <div x-show="loading" class="flex items-center gap-2">
+                    <span class="h-2 w-2 rounded-full bg-[var(--accent)] pulse"></span>
+                    <span>Searching...</span>
+                  </div>
+                </div>
+
+                <div class="mt-6 space-y-4">
+                  <template x-for="result in filteredResults()" :key="result.message_id">
+                    <article class="rounded-2xl border border-black/10 bg-white/90 p-5 shadow-sm">
+                      <div class="flex flex-col gap-2">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                          <div class="flex items-center gap-3 text-sm">
+                            <span class="rounded-full bg-[var(--fog)] px-3 py-1 text-xs uppercase tracking-wide">
+                              <span x-text="result.role"></span>
+                            </span>
+                            <span class="text-black/50" x-text="result.session_id.slice(0, 8)"></span>
+                            <span class="text-black/50" x-text="result.timestamp"></span>
+                          </div>
+                          <button
+                            class="text-xs uppercase tracking-[0.2em] text-[var(--sea-ink)]"
+                            @click="toggleContext(result.message_id)"
+                          >
+                            Context
+                          </button>
+                        </div>
+                        <p class="text-sm whitespace-pre-wrap" x-text="result.text_content"></p>
+                        <div
+                          class="mt-3 rounded-xl bg-[var(--fog)] p-3 text-xs text-black/70"
+                          x-show="context[result.message_id]"
+                          x-cloak
+                        >
+                          <template x-for="item in context[result.message_id].before" :key="item.message_id">
+                            <p class="mb-2"><span class="font-semibold" x-text="item.role"></span>: <span x-text="item.text_content"></span></p>
+                          </template>
+                          <p class="font-semibold text-[var(--sea-ink)]">Current</p>
+                          <p class="mb-2" x-text="context[result.message_id].message.text_content"></p>
+                          <template x-for="item in context[result.message_id].after" :key="item.message_id">
+                            <p class="mb-2"><span class="font-semibold" x-text="item.role"></span>: <span x-text="item.text_content"></span></p>
+                          </template>
+                        </div>
+                      </div>
+                    </article>
+                  </template>
+                </div>
+              </section>
+
+              <aside class="order-1 lg:order-2">
+                <div class="rounded-2xl bg-white/80 p-5 shadow-sm sticky top-6">
+                  <h2 class="font-display text-lg mb-4">Filters</h2>
+
+                  <div class="space-y-4">
+                    <div>
+                      <label class="text-xs uppercase tracking-widest text-black/50">Role</label>
+                      <div class="mt-2 space-y-2 text-sm">
+                        <label class="flex items-center gap-2">
+                          <input type="radio" name="role" value="" x-model="filters.role" />
+                          <span>All</span>
+                        </label>
+                        <label class="flex items-center gap-2">
+                          <input type="radio" name="role" value="user" x-model="filters.role" />
+                          <span>User</span>
+                        </label>
+                        <label class="flex items-center gap-2">
+                          <input type="radio" name="role" value="assistant" x-model="filters.role" />
+                          <span>Assistant</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label class="text-xs uppercase tracking-widest text-black/50">Tool</label>
+                      <select
+                        class="mt-2 w-full rounded-xl border border-black/10 bg-white px-3 py-2 text-sm"
+                        x-model="filters.tool"
+                      >
+                        <option value="">All tools</option>
+                        <option value="bash">bash</option>
+                        <option value="write">write</option>
+                        <option value="edit">edit</option>
+                        <option value="read">read</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label class="text-xs uppercase tracking-widest text-black/50">Date range</label>
+                      <div class="mt-2 flex gap-2">
+                        <input
+                          type="date"
+                          class="w-1/2 rounded-xl border border-black/10 px-3 py-2 text-xs"
+                          x-model="filters.since"
+                        />
+                        <input
+                          type="date"
+                          class="w-1/2 rounded-xl border border-black/10 px-3 py-2 text-xs"
+                          x-model="filters.until"
+                        />
+                      </div>
+                    </div>
+
+                    <div class="relative" data-session-dropdown>
+                      <div class="flex items-center justify-between">
+                        <label class="text-xs uppercase tracking-widest text-black/50">Merge sessions</label>
+                        <button
+                          type="button"
+                          class="flex items-center gap-2 text-xs uppercase tracking-[0.2em] text-[var(--sea-ink)]"
+                          @click="sessionDropdownOpen = !sessionDropdownOpen"
+                        >
+                          <span
+                            x-text="selectedSessionIds.length === sessions.length ? 'All sessions' : selectedSessionIds.length + ' selected'"
+                          ></span>
+                          <svg class="h-3 w-3" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                            <path
+                              fill-rule="evenodd"
+                              d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.94a.75.75 0 1 1 1.08 1.04l-4.24 4.5a.75.75 0 0 1-1.08 0l-4.24-4.5a.75.75 0 0 1 .02-1.06z"
+                              clip-rule="evenodd"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                      <div
+                        class="mt-2 rounded-xl border border-black/10 bg-white p-3 text-sm shadow-sm"
+                        x-show="sessionDropdownOpen"
+                        x-cloak
+                        @click.outside="sessionDropdownOpen = false"
+                      >
+                        <div class="flex items-center justify-between text-xs uppercase tracking-widest text-black/40">
+                          <span>Session scope</span>
+                          <div class="flex items-center gap-3">
+                            <button
+                              type="button"
+                              class="text-[var(--sea-ink)] hover:text-[var(--accent-deep)]"
+                              @click="selectAllSessions()"
+                            >
+                              All
+                            </button>
+                            <button
+                              type="button"
+                              class="text-[var(--sea-ink)] hover:text-[var(--accent-deep)]"
+                              @click="clearSessions()"
+                            >
+                              None
+                            </button>
+                          </div>
+                        </div>
+                        <div class="mt-3 max-h-48 overflow-y-auto space-y-2 text-sm">
+                          <template x-for="session in sessions" :key="session.session_id">
+                            <label class="flex items-center gap-2">
+                              <input
+                                type="checkbox"
+                                :value="session.session_id"
+                                x-model="selectedSessionIds"
+                              />
+                              <span x-text="session.session_id.slice(0, 8)"></span>
+                              <span class="text-xs text-black/40" x-text="'(' + session.message_count + ')'"></span>
+                            </label>
+                          </template>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </aside>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      function searchApp() {
+        return {
+          query: "",
+          results: [],
+          sessions: [],
+          selectedSessionIds: [],
+          sessionDropdownOpen: false,
+          stats: {},
+          context: {},
+          loading: false,
+          filters: {
+            role: "",
+            tool: "",
+            since: "",
+            until: "",
+          },
+          init() {
+            this.fetchStats();
+            this.fetchSessions();
+          },
+          async fetchStats() {
+            try {
+              const response = await fetch("/api/stats");
+              this.stats = await response.json();
+            } catch (err) {
+              console.error(err);
+            }
+          },
+          async fetchSessions() {
+            try {
+              const response = await fetch("/api/sessions");
+              const data = await response.json();
+              this.sessions = data;
+              this.selectedSessionIds = data.map((session) => session.session_id);
+            } catch (err) {
+              console.error(err);
+            }
+          },
+          filteredResults() {
+            if (!this.selectedSessionIds.length) {
+              return this.results;
+            }
+            const selected = new Set(this.selectedSessionIds);
+            return this.results.filter((result) => selected.has(result.session_id));
+          },
+          buildParams() {
+            const params = new URLSearchParams();
+            params.set("q", this.query.trim());
+            if (this.filters.role) params.set("role", this.filters.role);
+            if (this.filters.tool) params.set("tool", this.filters.tool);
+            if (this.filters.since) params.set("since", this.filters.since);
+            if (this.filters.until) params.set("until", this.filters.until);
+            return params;
+          },
+          async search() {
+            if (!this.query.trim()) return;
+            this.loading = true;
+            try {
+              const response = await fetch(`/api/search?${this.buildParams().toString()}`);
+              const data = await response.json();
+              this.results = data.results;
+            } catch (err) {
+              console.error(err);
+            } finally {
+              this.loading = false;
+            }
+          },
+          selectAllSessions() {
+            this.selectedSessionIds = this.sessions.map((session) => session.session_id);
+          },
+          clearSessions() {
+            this.selectedSessionIds = [];
+          },
+          async toggleContext(messageId) {
+            if (this.context[messageId]) {
+              delete this.context[messageId];
+              return;
+            }
+            try {
+              const response = await fetch(`/api/messages/${messageId}/context?before=2&after=2`);
+              this.context[messageId] = await response.json();
+            } catch (err) {
+              console.error(err);
+            }
+          },
+        };
+      }
+    </script>
+  </body>
+</html>
