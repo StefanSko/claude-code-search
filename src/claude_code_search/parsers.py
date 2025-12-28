@@ -55,6 +55,25 @@ class ParsedMessage:
     commits: list[Commit] = field(default_factory=list)
 
 
+@dataclass
+class Interaction:
+    """A grouped user-assistant exchange with all related messages."""
+
+    interaction_id: str
+    session_id: str
+    sequence_num: int  # Order within session
+    user_prompt: str  # The user's question/request
+    message_ids: list[str]  # All messages in this interaction
+    timestamp: str | None  # Timestamp of first message
+    has_thinking: bool = False
+    tool_calls: list[str] = field(default_factory=list)  # Tool names used
+    commits: list[Commit] = field(default_factory=list)
+    match_locations: list[dict[str, str]] = field(
+        default_factory=list
+    )  # Where search matches occurred
+    total_cost_usd: float = 0.0
+
+
 def parse_message(raw: dict[str, Any], session_id: str, seq: int) -> ParsedMessage:
     """Parse a raw message into structured data."""
     message_id = raw.get("uuid", f"{session_id}-{seq}")
@@ -276,3 +295,96 @@ def _determine_content_type(
 
     # Regular text messages
     return ("text", None)
+
+
+def group_messages_into_interactions(
+    messages: list[dict[str, Any]], session_id: str
+) -> list[Interaction]:
+    """Group raw messages into logical user-assistant interactions.
+
+    An interaction consists of:
+    1. A user message (prompt)
+    2. An assistant response (with optional thinking)
+    3. All tool uses from the assistant
+    4. All tool results (user messages) that follow
+
+    The interaction ends when the next user prompt appears (non-tool-result message).
+    """
+    interactions: list[Interaction] = []
+    current_messages: list[ParsedMessage] = []
+    interaction_num = 0
+
+    for seq, raw_msg in enumerate(messages):
+        parsed = parse_message(raw_msg, session_id, seq)
+        role = parsed.role
+
+        # Check if this is a user prompt (not a tool result)
+        is_user_prompt = role == "user" and parsed.content_type not in (
+            "tool_result",
+            "system",
+        )
+
+        # Start a new interaction if we see a user prompt and have accumulated messages
+        if is_user_prompt and current_messages:
+            # Finalize the previous interaction
+            interaction = _create_interaction(current_messages, session_id, interaction_num)
+            interactions.append(interaction)
+            interaction_num += 1
+            current_messages = []
+
+        # Add message to current interaction
+        current_messages.append(parsed)
+
+    # Don't forget the last interaction
+    if current_messages:
+        interaction = _create_interaction(current_messages, session_id, interaction_num)
+        interactions.append(interaction)
+
+    return interactions
+
+
+def _create_interaction(
+    messages: list[ParsedMessage], session_id: str, sequence_num: int
+) -> Interaction:
+    """Create an Interaction from a list of messages."""
+    # Extract user prompt (first user message or empty if starts with assistant)
+    user_prompt = ""
+    for msg in messages:
+        if msg.role == "user" and msg.content_type not in ("tool_result", "system"):
+            user_prompt = msg.text_content
+            break
+
+    # Collect metadata
+    message_ids = [msg.message_id for msg in messages]
+    timestamp = messages[0].timestamp if messages else None
+    has_thinking = any(msg.thinking_content for msg in messages)
+
+    # Collect tool calls (unique tool names)
+    tool_calls: list[str] = []
+    seen_tools: set[str] = set()
+    for msg in messages:
+        for tool in msg.tool_usages:
+            if tool.tool_name not in seen_tools:
+                tool_calls.append(tool.tool_name)
+                seen_tools.add(tool.tool_name)
+
+    # Collect all commits
+    commits: list[Commit] = []
+    for msg in messages:
+        commits.extend(msg.commits)
+
+    # Calculate total cost
+    total_cost = sum(msg.cost_usd or 0.0 for msg in messages)
+
+    return Interaction(
+        interaction_id=f"{session_id}-interaction-{sequence_num}",
+        session_id=session_id,
+        sequence_num=sequence_num,
+        user_prompt=user_prompt,
+        message_ids=message_ids,
+        timestamp=timestamp,
+        has_thinking=has_thinking,
+        tool_calls=tool_calls,
+        commits=commits,
+        total_cost_usd=total_cost,
+    )
