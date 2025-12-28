@@ -4,7 +4,19 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
+from typing import Any
+
+
+@dataclass
+class Commit:
+    """A git commit extracted from tool results."""
+
+    commit_hash: str
+    commit_message: str
+    branch: str | None = None
+    timestamp: str | None = None
 
 
 @dataclass
@@ -20,6 +32,7 @@ class ToolUsage:
     is_error: bool = False
     file_path: str | None = None
     command: str | None = None
+    commit_intent: str | None = None  # Commit message from git commit command
 
 
 @dataclass
@@ -39,9 +52,10 @@ class ParsedMessage:
     cost_usd: float | None = None
     duration_ms: int | None = None
     tool_usages: list[ToolUsage] = field(default_factory=list)
+    commits: list[Commit] = field(default_factory=list)
 
 
-def parse_message(raw: dict, session_id: str, seq: int) -> ParsedMessage:
+def parse_message(raw: dict[str, Any], session_id: str, seq: int) -> ParsedMessage:
     """Parse a raw message into structured data."""
     message_id = raw.get("uuid", f"{session_id}-{seq}")
     role = raw.get("message", {}).get("role", raw.get("type", "unknown"))
@@ -55,6 +69,7 @@ def parse_message(raw: dict, session_id: str, seq: int) -> ParsedMessage:
     tool_usages: list[ToolUsage] = []
     tool_results: list[str] = []
     pending_tools: dict[str, ToolUsage] = {}
+    commits: list[Commit] = []
 
     content = raw.get("message", {}).get("content", [])
     if isinstance(content, str):
@@ -73,6 +88,7 @@ def parse_message(raw: dict, session_id: str, seq: int) -> ParsedMessage:
 
             elif block_type == "tool_use":
                 tool_id = block.get("id", "")
+                command = _extract_command(block)
                 tool = ToolUsage(
                     tool_usage_id=tool_id,
                     message_id=message_id,
@@ -80,7 +96,8 @@ def parse_message(raw: dict, session_id: str, seq: int) -> ParsedMessage:
                     tool_name=block.get("name", ""),
                     tool_input=json.dumps(block.get("input", {})),
                     file_path=_extract_file_path(block),
-                    command=_extract_command(block),
+                    command=command,
+                    commit_intent=_extract_commit_intent(command),
                 )
                 pending_tools[tool_id] = tool
                 tool_usages.append(tool)
@@ -96,12 +113,18 @@ def parse_message(raw: dict, session_id: str, seq: int) -> ParsedMessage:
                         elif isinstance(part, str):
                             result_parts.append(part)
                     result_content = "\n".join(result_parts)
+
+                # Extract commits from tool result
+                result_str = str(result_content)
+                result_commits = _extract_commits_from_result(result_str, timestamp)
+                commits.extend(result_commits)
+
                 if tool_id in pending_tools:
                     tool = pending_tools[tool_id]
-                    tool.tool_result = str(result_content)
+                    tool.tool_result = result_str
                     tool.is_error = block.get("is_error", False)
                 # Track tool results for summary
-                tool_results.append(str(result_content)[:100] if result_content else "(empty)")
+                tool_results.append(result_str[:100] if result_content else "(empty)")
 
     text_content = "\n".join(text_parts)
 
@@ -114,7 +137,7 @@ def parse_message(raw: dict, session_id: str, seq: int) -> ParsedMessage:
 
     # Determine content type and generate tool summary
     content_type, tool_summary = _determine_content_type(
-        text_parts, tool_usages, tool_results, thinking_content, raw.get("type", "")
+        text_parts, tool_usages, tool_results, thinking_content, raw.get("type", ""), commits
     )
 
     return ParsedMessage(
@@ -131,20 +154,65 @@ def parse_message(raw: dict, session_id: str, seq: int) -> ParsedMessage:
         cost_usd=cost_usd,
         duration_ms=duration_ms,
         tool_usages=tool_usages,
+        commits=commits,
     )
 
 
-def _extract_file_path(block: dict) -> str | None:
+def _extract_file_path(block: dict[str, Any]) -> str | None:
     """Extract file path from tool input."""
-    tool_input = block.get("input", {})
-    return tool_input.get("path") or tool_input.get("file_path")
+    tool_input: dict[str, Any] = block.get("input", {})
+    path = tool_input.get("path") or tool_input.get("file_path")
+    return str(path) if path is not None else None
 
 
-def _extract_command(block: dict) -> str | None:
+def _extract_command(block: dict[str, Any]) -> str | None:
     """Extract command from bash tool input."""
     if block.get("name") == "Bash":
-        return block.get("input", {}).get("command")
+        cmd = block.get("input", {}).get("command")
+        return str(cmd) if cmd is not None else None
     return None
+
+
+def _extract_commit_intent(command: str | None) -> str | None:
+    """Extract commit message from git commit command."""
+    if not command:
+        return None
+
+    # Match: git commit -m "message" or git commit -m 'message'
+    match = re.search(r'git\s+commit\s+.*?-m\s+["\']([^"\']+)["\']', command)
+    if match:
+        return match.group(1)
+
+    return None
+
+
+def _extract_commits_from_result(result_content: str, timestamp: str | None = None) -> list[Commit]:
+    """Extract commit information from tool result content.
+
+    Matches patterns like:
+    - [main a6ab2d7] fix: commit message
+    - [detached HEAD 9a8b7c6] test: message
+    """
+    commits = []
+
+    # Pattern: [branch commit_hash] commit message
+    pattern = r"\[([\w\s/-]+)\s+([0-9a-f]{7,40})\]\s+(.+?)(?:\n|$)"
+
+    for match in re.finditer(pattern, result_content):
+        branch = match.group(1).strip()
+        commit_hash = match.group(2).strip()
+        commit_message = match.group(3).strip()
+
+        commits.append(
+            Commit(
+                commit_hash=commit_hash,
+                commit_message=commit_message,
+                branch=branch,
+                timestamp=timestamp,
+            )
+        )
+
+    return commits
 
 
 def _determine_content_type(
@@ -153,6 +221,7 @@ def _determine_content_type(
     tool_results: list[str],
     thinking_content: str | None,
     raw_type: str,
+    commits: list[Commit],
 ) -> tuple[str, str | None]:
     """Determine the content type and generate a tool summary."""
     has_text = any(part.strip() for part in text_parts)
@@ -169,6 +238,12 @@ def _determine_content_type(
             if len(result) > 80:
                 preview += "..."
             summary_parts.append(preview)
+
+        # Add commit info to summary if present
+        if commits:
+            commit_info = ", ".join(f"commit {c.commit_hash}" for c in commits[:2])
+            summary_parts.append(commit_info)
+
         tool_summary = "; ".join(summary_parts)
         if has_text:
             return ("text", tool_summary)
