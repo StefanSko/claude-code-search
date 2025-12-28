@@ -32,9 +32,7 @@ class LocalSessionLoader(SessionLoader):
 
         return sorted(sessions, key=lambda s: s.modified_at, reverse=True)
 
-    def _parse_session_file(
-        self, session_file: Path, project_name: str
-    ) -> SessionInfo | None:
+    def _parse_session_file(self, session_file: Path, project_name: str) -> SessionInfo | None:
         """Parse a session file to extract metadata."""
         try:
             messages = self._read_messages(session_file)
@@ -59,13 +57,9 @@ class LocalSessionLoader(SessionLoader):
             last_msg = messages[-1] if messages else {}
             timestamp_str = last_msg.get("timestamp")
             if timestamp_str:
-                modified_at = datetime.fromisoformat(
-                    timestamp_str.replace("Z", "+00:00")
-                )
+                modified_at = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
             else:
-                modified_at = datetime.fromtimestamp(
-                    session_file.stat().st_mtime, tz=UTC
-                )
+                modified_at = datetime.fromtimestamp(session_file.stat().st_mtime, tz=UTC)
 
             return SessionInfo(
                 session_id=session_file.stem,

@@ -271,15 +271,9 @@ class SearchIndex:
 
     def get_stats(self) -> dict[str, Any]:
         """Get index statistics."""
-        session_count = self.conn.execute(
-            "SELECT COUNT(*) FROM sessions"
-        ).fetchone()[0]
-        message_count = self.conn.execute(
-            "SELECT COUNT(*) FROM messages"
-        ).fetchone()[0]
-        tool_count = self.conn.execute(
-            "SELECT COUNT(*) FROM tool_usages"
-        ).fetchone()[0]
+        session_count = self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+        message_count = self.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+        tool_count = self.conn.execute("SELECT COUNT(*) FROM tool_usages").fetchone()[0]
         total_cost = self.conn.execute(
             "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions"
         ).fetchone()[0]
