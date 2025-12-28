@@ -42,3 +42,24 @@ def test_server_search_endpoint(sample_session_messages: list[dict]) -> None:
     payload = response.json()
     assert payload["total"] >= 1
     assert payload["results"][0]["session_id"] == "session-123"
+    assert payload["interactions"]
+    assert payload["sessions"]
+
+
+def test_server_interaction_endpoint(sample_session_messages: list[dict]) -> None:
+    index = SearchIndex(":memory:")
+    index.index_session(
+        session_id="session-123",
+        messages=sample_session_messages,
+        source="local",
+        session_path="/tmp/session-123/messages.jsonl",
+    )
+
+    app = create_app(index)
+    client = TestClient(app)
+
+    response = client.get("/api/sessions/session-123/interactions/msg-001")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["interaction_id"] == "msg-001"
+    assert payload["messages"]

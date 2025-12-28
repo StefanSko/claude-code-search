@@ -121,10 +121,18 @@
                   </div>
                 </div>
 
-                <div class="mt-6 flex items-center gap-3 text-sm text-black/60">
+                <div class="mt-6 flex flex-wrap items-center gap-4 text-sm text-black/60">
                   <div class="flex items-center gap-2">
                     <span class="h-2 w-2 rounded-full bg-[var(--sea)]"></span>
-                    <span x-text="filteredResults().length + ' results'">0 results</span>
+                    <span x-text="filteredSessionGroups().length + ' sessions'">0 sessions</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="h-2 w-2 rounded-full bg-[var(--accent)]"></span>
+                    <span x-text="filteredInteractionsCount() + ' interactions'">0 interactions</span>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span class="h-2 w-2 rounded-full bg-[var(--accent-deep)]"></span>
+                    <span x-text="filteredMatches().length + ' matches'">0 matches</span>
                   </div>
                   <div x-show="loading" class="flex items-center gap-2">
                     <span class="h-2 w-2 rounded-full bg-[var(--accent)] pulse"></span>
@@ -133,37 +141,127 @@
                 </div>
 
                 <div class="mt-6 space-y-4">
-                  <template x-for="result in filteredResults()" :key="result.message_id">
-                    <article class="rounded-2xl border border-black/10 bg-white/90 p-5 shadow-sm">
-                      <div class="flex flex-col gap-2">
-                        <div class="flex flex-wrap items-center justify-between gap-2">
-                          <div class="flex items-center gap-3 text-sm">
-                            <span class="rounded-full bg-[var(--fog)] px-3 py-1 text-xs uppercase tracking-wide">
-                              <span x-text="result.role"></span>
-                            </span>
-                            <span class="text-black/50" x-text="result.session_id.slice(0, 8)"></span>
-                            <span class="text-black/50" x-text="result.timestamp"></span>
-                          </div>
+                  <article
+                    class="rounded-2xl border border-black/10 bg-white/90 p-5 shadow-sm"
+                    x-show="interactionDetail"
+                    x-cloak
+                  >
+                    <div class="flex flex-col gap-4">
+                      <div class="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                          <p class="text-xs uppercase tracking-[0.3em] text-black/40">Interaction</p>
+                          <p class="font-semibold text-[var(--sea-ink)]" x-text="interactionDetail?.start_message?.text_content"></p>
+                          <p class="text-xs text-black/50" x-text="interactionDetail?.session_id"></p>
+                        </div>
+                        <div class="flex items-center gap-2">
                           <button
-                            class="text-xs uppercase tracking-[0.2em] text-[var(--sea-ink)]"
-                            @click="toggleContext(result.message_id)"
+                            class="rounded-full border border-black/10 px-3 py-1 text-xs uppercase tracking-widest text-black/60 hover:text-[var(--accent-deep)]"
+                            @click="prevMessage()"
                           >
-                            Context
+                            Prev
+                          </button>
+                          <button
+                            class="rounded-full border border-black/10 px-3 py-1 text-xs uppercase tracking-widest text-black/60 hover:text-[var(--accent-deep)]"
+                            @click="nextMessage()"
+                          >
+                            Next
                           </button>
                         </div>
-                        <p class="text-sm whitespace-pre-wrap" x-text="result.text_content"></p>
-                        <div
-                          class="mt-3 rounded-xl bg-[var(--fog)] p-3 text-xs text-black/70"
-                          x-show="context[result.message_id]"
-                          x-cloak
-                        >
-                          <template x-for="item in context[result.message_id].before" :key="item.message_id">
-                            <p class="mb-2"><span class="font-semibold" x-text="item.role"></span>: <span x-text="item.text_content"></span></p>
-                          </template>
-                          <p class="font-semibold text-[var(--sea-ink)]">Current</p>
-                          <p class="mb-2" x-text="context[result.message_id].message.text_content"></p>
-                          <template x-for="item in context[result.message_id].after" :key="item.message_id">
-                            <p class="mb-2"><span class="font-semibold" x-text="item.role"></span>: <span x-text="item.text_content"></span></p>
+                      </div>
+
+                      <div class="flex flex-wrap items-center gap-2" x-show="interactionDetail?.commit_ids?.length">
+                        <template x-for="commit in interactionDetail?.commit_ids || []" :key="commit">
+                          <button
+                            class="rounded-full bg-[var(--fog)] px-3 py-1 text-xs font-semibold text-[var(--sea-ink)] hover:text-[var(--accent-deep)]"
+                            @click="searchCommit(commit)"
+                          >
+                            <span x-text="commit"></span>
+                          </button>
+                        </template>
+                      </div>
+
+                      <div class="max-h-[420px] space-y-3 overflow-y-auto pr-2">
+                        <template x-for="(message, index) in interactionDetail?.messages || []" :key="message.message_id">
+                          <div
+                            class="rounded-xl border border-black/10 bg-white/80 p-4 text-sm"
+                            :class="activeMessageIndex === index ? 'ring-2 ring-[var(--accent)]' : ''"
+                            :data-message-index="index"
+                          >
+                            <div class="flex flex-wrap items-center justify-between gap-2">
+                              <span class="rounded-full bg-[var(--fog)] px-3 py-1 text-xs uppercase tracking-wide">
+                                <span x-text="message.role"></span>
+                              </span>
+                              <span class="text-xs text-black/40" x-text="message.timestamp"></span>
+                            </div>
+                            <p class="mt-2 whitespace-pre-wrap" x-text="message.text_content || 'No text content'"></p>
+
+                            <template x-if="message.tool_usages && message.tool_usages.length">
+                              <div class="mt-3 space-y-2">
+                                <template x-for="tool in message.tool_usages" :key="tool.tool_usage_id">
+                                  <div class="rounded-lg bg-[var(--fog)] p-3 text-xs text-black/70">
+                                    <p class="font-semibold text-[var(--sea-ink)]" x-text="tool.tool_name"></p>
+                                    <p class="mt-1 whitespace-pre-wrap" x-text="tool.tool_input || tool.command || tool.file_path"></p>
+                                    <p class="mt-2 whitespace-pre-wrap text-black/60" x-text="tool.tool_result"></p>
+                                  </div>
+                                </template>
+                              </div>
+                            </template>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </article>
+
+                  <template x-for="session in filteredSessionGroups()" :key="session.session_id">
+                    <article class="rounded-2xl border border-black/10 bg-white/90 p-5 shadow-sm">
+                      <div class="flex flex-col gap-4">
+                        <div class="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p class="text-xs uppercase tracking-[0.3em] text-black/40">Conversation</p>
+                            <p class="text-base font-semibold text-[var(--sea-ink)]" x-text="session.session_id"></p>
+                            <p class="text-xs text-black/40" x-text="session.project_directory || session.session_path || ''"></p>
+                          </div>
+                          <div class="text-xs text-black/40" x-text="session.last_message_at || ''"></div>
+                        </div>
+
+                        <div class="space-y-3">
+                          <template x-for="interaction in session.interactions" :key="interaction.interaction_id">
+                            <div class="rounded-xl border border-black/10 bg-white/70 p-4">
+                              <div class="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                  <p class="text-xs uppercase tracking-[0.3em] text-black/40">User prompt</p>
+                                  <p
+                                    class="text-base font-semibold text-[var(--sea-ink)]"
+                                    x-text="interaction.start_message.text_content"
+                                  ></p>
+                                  <p class="text-xs text-black/40" x-text="interaction.start_message.timestamp"></p>
+                                </div>
+                          <button
+                            class="text-xs uppercase tracking-[0.2em] text-[var(--sea-ink)]"
+                            @click="openInteraction(interaction)"
+                          >
+                            View
+                          </button>
+                              </div>
+
+                              <div class="mt-3 space-y-2">
+                                <template x-for="match in interaction.matches" :key="match.message_id">
+                                  <button
+                                    class="flex w-full flex-col gap-1 rounded-xl border border-black/10 bg-white/80 p-3 text-left text-xs hover:border-[var(--accent)]"
+                                    @click="openInteraction(interaction, match.message_id)"
+                                  >
+                                    <div class="flex flex-wrap items-center gap-2 text-black/60">
+                                      <span
+                                        class="rounded-full bg-[var(--fog)] px-2 py-1 text-[10px] uppercase tracking-wide"
+                                        x-text="match.match_source === 'tool' ? (match.tool_name || 'tool') : match.role"
+                                      ></span>
+                                      <span x-text="match.timestamp"></span>
+                                    </div>
+                                    <span class="text-sm text-black/80" x-text="match.preview"></span>
+                                  </button>
+                                </template>
+                              </div>
+                            </div>
                           </template>
                         </div>
                       </div>
@@ -299,12 +397,15 @@
         return {
           query: "",
           results: [],
+          interactions: [],
+          sessionGroups: [],
           sessions: [],
           selectedSessionIds: [],
           sessionDropdownOpen: false,
           stats: {},
-          context: {},
           loading: false,
+          interactionDetail: null,
+          activeMessageIndex: 0,
           filters: {
             role: "",
             tool: "",
@@ -340,6 +441,22 @@
             const selected = new Set(this.selectedSessionIds);
             return this.results.filter((result) => selected.has(result.session_id));
           },
+          filteredMatches() {
+            return this.filteredResults();
+          },
+          filteredInteractionsCount() {
+            return this.filteredSessionGroups().reduce(
+              (total, session) => total + session.interactions.length,
+              0
+            );
+          },
+          filteredSessionGroups() {
+            if (!this.selectedSessionIds.length) {
+              return this.sessionGroups;
+            }
+            const selected = new Set(this.selectedSessionIds);
+            return this.sessionGroups.filter((session) => selected.has(session.session_id));
+          },
           buildParams() {
             const params = new URLSearchParams();
             params.set("q", this.query.trim());
@@ -356,6 +473,9 @@
               const response = await fetch(`/api/search?${this.buildParams().toString()}`);
               const data = await response.json();
               this.results = data.results;
+              this.interactions = data.interactions;
+              this.sessionGroups = data.sessions || [];
+              this.interactionDetail = null;
             } catch (err) {
               console.error(err);
             } finally {
@@ -368,17 +488,53 @@
           clearSessions() {
             this.selectedSessionIds = [];
           },
-          async toggleContext(messageId) {
-            if (this.context[messageId]) {
-              delete this.context[messageId];
-              return;
-            }
+          async openInteraction(interaction, focusMessageId = null) {
             try {
-              const response = await fetch(`/api/messages/${messageId}/context?before=2&after=2`);
-              this.context[messageId] = await response.json();
+              const response = await fetch(
+                `/api/sessions/${interaction.session_id}/interactions/${interaction.interaction_id}`
+              );
+              this.interactionDetail = await response.json();
+              const messages = this.interactionDetail.messages || [];
+              let targetIndex = 0;
+              if (focusMessageId) {
+                const foundIndex = messages.findIndex(
+                  (message) => message.message_id === focusMessageId
+                );
+                if (foundIndex >= 0) {
+                  targetIndex = foundIndex;
+                }
+              }
+              this.activeMessageIndex = targetIndex;
+              this.$nextTick(() => this.scrollToMessage(targetIndex));
             } catch (err) {
               console.error(err);
             }
+          },
+          scrollToMessage(index) {
+            this.activeMessageIndex = index;
+            this.$nextTick(() => {
+              const el = document.querySelector(`[data-message-index="${index}"]`);
+              if (el) {
+                el.scrollIntoView({ behavior: "smooth", block: "start" });
+              }
+            });
+          },
+          nextMessage() {
+            if (!this.interactionDetail) return;
+            const nextIndex = Math.min(
+              this.activeMessageIndex + 1,
+              this.interactionDetail.messages.length - 1
+            );
+            this.scrollToMessage(nextIndex);
+          },
+          prevMessage() {
+            if (!this.interactionDetail) return;
+            const prevIndex = Math.max(this.activeMessageIndex - 1, 0);
+            this.scrollToMessage(prevIndex);
+          },
+          searchCommit(commit) {
+            this.query = commit;
+            this.search();
           },
         };
       }
