@@ -347,3 +347,138 @@ class TestThinkingExtraction:
         result = parse_message(raw, "session-1", 3)
 
         assert "Unique searchable phrase" in result.searchable_text
+
+
+class TestCommitExtraction:
+    """Tests for extracting commit information from messages."""
+
+    def test_extract_commit_from_bash_tool_result(self) -> None:
+        """Extract commit hash and message from git commit tool result."""
+        raw = {
+            "uuid": "msg-001",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-001",
+                        "content": (
+                            "[main a6ab2d7] fix: resolve authentication bug\n"
+                            " 3 files changed, 42 insertions(+), 15 deletions(-)"
+                        ),
+                    }
+                ],
+            },
+            "timestamp": "2024-12-25T10:00:10Z",
+        }
+
+        result = parse_message(raw, "session-1", 0)
+
+        assert result.commits is not None
+        assert len(result.commits) == 1
+        commit = result.commits[0]
+        assert commit.commit_hash == "a6ab2d7"
+        assert commit.commit_message == "fix: resolve authentication bug"
+        assert commit.branch == "main"
+
+    def test_extract_commit_from_bash_command(self) -> None:
+        """Extract commit message from git commit command."""
+        raw = {
+            "uuid": "msg-002",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-002",
+                        "name": "Bash",
+                        "input": {"command": 'git commit -m "feat: add search functionality"'},
+                    },
+                ],
+            },
+        }
+
+        result = parse_message(raw, "session-1", 1)
+
+        # Commit info should be in tool usage, not message directly
+        assert len(result.tool_usages) == 1
+        tool = result.tool_usages[0]
+        assert tool.commit_intent is not None
+        assert tool.commit_intent == "feat: add search functionality"
+
+    def test_extract_multiple_commits_from_result(self) -> None:
+        """Extract multiple commits if present in tool result."""
+        raw = {
+            "uuid": "msg-003",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-003",
+                        "content": "[main abc1234] First commit\n[main def5678] Second commit",
+                    }
+                ],
+            },
+        }
+
+        result = parse_message(raw, "session-1", 2)
+
+        assert result.commits is not None
+        assert len(result.commits) == 2
+        assert result.commits[0].commit_hash == "abc1234"
+        assert result.commits[1].commit_hash == "def5678"
+
+    def test_no_commits_in_regular_message(self) -> None:
+        """Regular messages without commits should have empty commits list."""
+        raw = {
+            "uuid": "msg-004",
+            "message": {"role": "user", "content": "Just a regular message"},
+        }
+
+        result = parse_message(raw, "session-1", 3)
+
+        assert result.commits == []
+
+    def test_extract_commit_with_detached_head(self) -> None:
+        """Handle commit output when in detached HEAD state."""
+        raw = {
+            "uuid": "msg-005",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-005",
+                        "content": "[detached HEAD 9a8b7c6] test: add unit tests",
+                    }
+                ],
+            },
+        }
+
+        result = parse_message(raw, "session-1", 4)
+
+        assert len(result.commits) == 1
+        assert result.commits[0].commit_hash == "9a8b7c6"
+        assert result.commits[0].branch == "detached HEAD"
+
+    def test_commit_searchable_in_tool_summary(self) -> None:
+        """Commits should be mentioned in tool summary for searchability."""
+        raw = {
+            "uuid": "msg-006",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "tool-006",
+                        "content": "[main f1e2d3c] chore: update dependencies",
+                    }
+                ],
+            },
+        }
+
+        result = parse_message(raw, "session-1", 5)
+
+        assert result.tool_summary is not None
+        assert "f1e2d3c" in result.tool_summary or "commit" in result.tool_summary.lower()

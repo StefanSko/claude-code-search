@@ -12,15 +12,11 @@ class TestSearchIndex:
         """New index should be empty."""
         assert search_index.is_empty()
 
-    def test_is_not_empty_after_indexing(
-        self, indexed_search: SearchIndex
-    ) -> None:
+    def test_is_not_empty_after_indexing(self, indexed_search: SearchIndex) -> None:
         """Index should not be empty after adding sessions."""
         assert not indexed_search.is_empty()
 
-    def test_index_session(
-        self, search_index: SearchIndex, sample_messages: list[dict]
-    ) -> None:
+    def test_index_session(self, search_index: SearchIndex, sample_messages: list[dict]) -> None:
         """Index a session and verify it's stored."""
         search_index.index_session(
             session_id="test-session",
@@ -56,9 +52,7 @@ class TestSearchIndex:
 
         assert all(r["role"] == "user" for r in results)
 
-    def test_search_returns_empty_for_no_match(
-        self, indexed_search: SearchIndex
-    ) -> None:
+    def test_search_returns_empty_for_no_match(self, indexed_search: SearchIndex) -> None:
         """Search should return empty for non-matching query."""
         results = indexed_search.search("xyznonexistent123")
 
@@ -89,9 +83,7 @@ class TestSearchIndex:
 
     def test_get_message_with_context(self, indexed_search: SearchIndex) -> None:
         """Get a message with surrounding context."""
-        result = indexed_search.get_message_with_context(
-            "msg-002", before=1, after=1
-        )
+        result = indexed_search.get_message_with_context("msg-002", before=1, after=1)
 
         assert result is not None
         assert result["message"]["message_id"] == "msg-002"
@@ -118,9 +110,7 @@ class TestSearchIndexMultipleSessions:
         stats = search_index.get_stats()
         assert stats["session_count"] == 2
 
-    def test_search_across_sessions(
-        self, search_index: SearchIndex
-    ) -> None:
+    def test_search_across_sessions(self, search_index: SearchIndex) -> None:
         """Search should find results across all sessions."""
         messages_1 = [
             {"uuid": "s1-msg-1", "message": {"role": "user", "content": "Create Python CLI"}}
@@ -149,7 +139,12 @@ class TestContentTypeFilter:
                 "message": {
                     "role": "assistant",
                     "content": [
-                        {"type": "tool_use", "id": "t1", "name": "Write", "input": {"path": "python.py"}},
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Write",
+                            "input": {"path": "python.py"},
+                        },
                     ],
                 },
             },
@@ -170,7 +165,12 @@ class TestContentTypeFilter:
                 "message": {
                     "role": "assistant",
                     "content": [
-                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "npm install"}},
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Bash",
+                            "input": {"command": "npm install"},
+                        },
                     ],
                 },
                 # Add thinking content so it's searchable
