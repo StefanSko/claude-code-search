@@ -114,6 +114,52 @@ def create_app(index: SearchIndex) -> FastAPI:
         """Get a message with surrounding context."""
         return get_index().get_message_with_context(message_id, before, after)
 
+    @app.get("/api/interactions/{session_id}")
+    async def get_interactions(
+        session_id: str,
+        limit: int | None = Query(None, ge=1, le=1000, description="Max interactions"),
+    ) -> list[dict[str, Any]]:
+        """Get all interactions for a session."""
+        return get_index().get_interactions(session_id, limit)
+
+    @app.get("/api/interaction/{interaction_id}")
+    async def get_interaction(interaction_id: str) -> dict[str, Any] | None:
+        """Get a single interaction with all messages and commits."""
+        return get_index().get_interaction(interaction_id)
+
+    @app.get("/api/search/interactions")
+    async def search_interactions(
+        q: str = Query(..., min_length=1, description="Search query"),
+        session: str | None = Query(None, description="Filter by session ID"),
+        limit: int = Query(20, ge=1, le=100, description="Max results"),
+    ) -> dict[str, Any]:
+        """Search for interactions matching the query."""
+        results = get_index().search_interactions(query=q, session_id=session, limit=limit)
+        return {
+            "results": results,
+            "total": len(results),
+            "query": q,
+        }
+
+    @app.get("/api/commits/{commit_hash}")
+    async def get_commit(commit_hash: str) -> dict[str, Any] | None:
+        """Get commit details by hash."""
+        return get_index().get_commit(commit_hash)
+
+    @app.get("/api/search/commits")
+    async def search_commits(
+        q: str = Query(..., min_length=1, description="Search query"),
+        session: str | None = Query(None, description="Filter by session ID"),
+        limit: int = Query(20, ge=1, le=100, description="Max results"),
+    ) -> dict[str, Any]:
+        """Search commits by hash or message."""
+        results = get_index().search_commits(query=q, session_id=session, limit=limit)
+        return {
+            "results": results,
+            "total": len(results),
+            "query": q,
+        }
+
     return app
 
 
