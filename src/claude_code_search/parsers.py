@@ -193,14 +193,34 @@ def _extract_command(block: dict[str, Any]) -> str | None:
 
 
 def _extract_commit_intent(command: str | None) -> str | None:
-    """Extract commit message from git commit command."""
+    """Extract commit message from git commit command.
+
+    Handles various formats:
+    - git commit -m "message"
+    - git commit -m 'message'
+    - git commit -m "$(cat <<'EOF'\nmessage\nEOF\n)"
+    """
     if not command:
         return None
 
-    # Match: git commit -m "message" or git commit -m 'message'
-    match = re.search(r'git\s+commit\s+.*?-m\s+["\']([^"\']+)["\']', command)
-    if match:
-        return match.group(1)
+    # First try: HEREDOC style - git commit -m "$(cat <<'EOF'\nmessage\nEOF\n)"
+    # This is common in Claude Code commits
+    heredoc_match = re.search(
+        r'git\s+commit\s+.*?-m\s+"\$\(cat\s+<<[\'"]?EOF[\'"]?\s*\n(.+?)\n\s*EOF',
+        command,
+        re.DOTALL,
+    )
+    if heredoc_match:
+        # Extract the first line of the commit message (the title)
+        message = heredoc_match.group(1).strip()
+        # Return just the first line if there are multiple
+        first_line = message.split("\n")[0].strip()
+        return first_line if first_line else message
+
+    # Second try: Simple quoted message - git commit -m "message" or -m 'message'
+    simple_match = re.search(r'git\s+commit\s+.*?-m\s+["\']([^"\']+)["\']', command)
+    if simple_match:
+        return simple_match.group(1)
 
     return None
 

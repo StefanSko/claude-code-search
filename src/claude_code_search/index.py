@@ -90,6 +90,20 @@ CREATE TABLE IF NOT EXISTS interactions (
 )
 """
 
+MESSAGE_INTERACTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS message_interactions (
+    message_id VARCHAR NOT NULL,
+    interaction_id VARCHAR NOT NULL,
+    PRIMARY KEY (message_id, interaction_id)
+)
+"""
+
+INDEXES_DDL = """
+CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
+CREATE INDEX IF NOT EXISTS idx_commits_session ON commits(session_id);
+CREATE INDEX IF NOT EXISTS idx_message_interactions_interaction ON message_interactions(interaction_id);
+"""
+
 
 class SearchIndex:
     """DuckDB-based search index for Claude Code sessions."""
@@ -107,6 +121,11 @@ class SearchIndex:
         self.conn.execute(TOOL_USAGES_DDL)
         self.conn.execute(COMMITS_DDL)
         self.conn.execute(INTERACTIONS_DDL)
+        self.conn.execute(MESSAGE_INTERACTIONS_DDL)
+        # Create indexes for efficient queries
+        for stmt in INDEXES_DDL.strip().split(";"):
+            if stmt.strip():
+                self.conn.execute(stmt)
 
     def is_empty(self) -> bool:
         """Check if the index has any sessions."""
@@ -213,7 +232,7 @@ class SearchIndex:
                 ],
             )
 
-        # Insert interactions
+        # Insert interactions and message-interaction mappings
         for interaction in interactions:
             self.conn.execute(
                 """
@@ -235,6 +254,17 @@ class SearchIndex:
                     len(interaction.commits),
                 ],
             )
+
+            # Insert message-interaction mappings
+            for message_id in interaction.message_ids:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO message_interactions
+                    (message_id, interaction_id)
+                    VALUES (?, ?)
+                    """,
+                    [message_id, interaction.interaction_id],
+                )
 
         # Insert commits with interaction linkage
         commit_to_interaction: dict[str, str] = {}
@@ -487,15 +517,15 @@ class SearchIndex:
         """Get all interactions for a session."""
         sql = """
             SELECT i.*,
-                   GROUP_CONCAT(m.message_id) as message_ids,
+                   GROUP_CONCAT(mi.message_id) as message_ids,
                    GROUP_CONCAT(DISTINCT c.commit_hash) as commit_hashes
             FROM interactions i
-            LEFT JOIN messages m ON m.message_id IN (
-                SELECT UNNEST(string_split(i.interaction_id, '-'))
-            )
+            LEFT JOIN message_interactions mi ON mi.interaction_id = i.interaction_id
             LEFT JOIN commits c ON c.interaction_id = i.interaction_id
             WHERE i.session_id = ?
-            GROUP BY i.interaction_id
+            GROUP BY i.interaction_id, i.session_id, i.sequence_num, i.user_prompt,
+                     i.timestamp, i.has_thinking, i.total_cost_usd,
+                     i.message_count, i.tool_count, i.commit_count
             ORDER BY i.sequence_num
         """
 
@@ -520,20 +550,15 @@ class SearchIndex:
         columns = [desc[0] for desc in self.conn.description or []]
         interaction = dict(zip(columns, interaction_result, strict=False))
 
-        # Get all messages in this interaction
-        # Since we store message_ids in the Interaction object, we need to query messages table
-        # For now, use session_id (approximate - returns all messages for session)
-        session_id = interaction["session_id"]
-
-        # Get messages that belong to this interaction (rough approximation)
-        # A better approach would be to store message_interaction mapping
+        # Get messages that belong to this interaction via junction table
         messages_result = self.conn.execute(
             """
-            SELECT * FROM messages
-            WHERE session_id = ?
-            ORDER BY sequence_num
+            SELECT m.* FROM messages m
+            JOIN message_interactions mi ON mi.message_id = m.message_id
+            WHERE mi.interaction_id = ?
+            ORDER BY m.sequence_num
             """,
-            [session_id],
+            [interaction_id],
         ).fetchall()
 
         msg_columns = [desc[0] for desc in self.conn.description or []]
@@ -571,41 +596,41 @@ class SearchIndex:
         message_matches = self.search(
             query=query,
             session_id=session_id,
-            limit=limit * 3,  # Get more messages to dedupe by interaction
+            limit=limit * 5,  # Get more messages to dedupe by interaction
         )
 
         # Group by interaction and get unique interactions
-        interaction_ids: set[str] = set()
         interaction_map: dict[str, dict[str, Any]] = {}
 
         for msg in message_matches:
-            msg_session = msg["session_id"]
+            message_id = msg["message_id"]
 
-            # Find the interaction this message belongs to
+            # Find the interaction this message belongs to via junction table
             interaction_result = self.conn.execute(
                 """
-                SELECT * FROM interactions
-                WHERE session_id = ?
-                ORDER BY sequence_num
+                SELECT i.* FROM interactions i
+                JOIN message_interactions mi ON mi.interaction_id = i.interaction_id
+                WHERE mi.message_id = ?
                 """,
-                [msg_session],
-            ).fetchall()
+                [message_id],
+            ).fetchone()
 
-            # Find which interaction this message sequence belongs to
-            for row in interaction_result:
-                int_id = row[0]  # interaction_id is first column
-                if int_id not in interaction_ids:
-                    columns = [desc[0] for desc in self.conn.description or []]
-                    interaction = dict(zip(columns, row, strict=False))
-                    interaction["match_message_id"] = msg["message_id"]
-                    interaction["match_type"] = msg["content_type"]
-                    interaction["score"] = msg.get("score", 0)
-                    interaction_map[int_id] = interaction
-                    interaction_ids.add(int_id)
-                    break
+            if not interaction_result:
+                continue
 
-                if len(interaction_ids) >= limit:
-                    break
+            columns = [desc[0] for desc in self.conn.description or []]
+            interaction = dict(zip(columns, interaction_result, strict=False))
+            int_id = interaction["interaction_id"]
+
+            # Track the best (highest scoring) match for each interaction
+            msg_score = msg.get("score", 0)
+            if int_id not in interaction_map or msg_score > interaction_map[int_id].get(
+                "score", 0
+            ):
+                interaction["match_message_id"] = message_id
+                interaction["match_type"] = msg["content_type"]
+                interaction["score"] = msg_score
+                interaction_map[int_id] = interaction
 
         # Convert to list and sort by score
         results = list(interaction_map.values())

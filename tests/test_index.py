@@ -247,3 +247,87 @@ class TestContextWithToolSummary:
             assert result is not None
             context_ids = [m["message_id"] for m in result["context"]]
             assert msg_id in context_ids
+
+
+class TestInteractionQueries:
+    """Tests for interaction-related queries using junction table."""
+
+    def test_get_interactions_returns_correct_messages(
+        self, search_index: SearchIndex
+    ) -> None:
+        """get_interactions should return interactions with message IDs from junction table."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "First question"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "First answer"}},
+            {"uuid": "msg-3", "message": {"role": "user", "content": "Second question"}},
+            {"uuid": "msg-4", "message": {"role": "assistant", "content": "Second answer"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        interactions = search_index.get_interactions("session-1")
+
+        assert len(interactions) == 2
+        # Each interaction should have message_ids populated via junction table
+        assert interactions[0]["message_ids"] is not None
+        assert interactions[1]["message_ids"] is not None
+
+    def test_get_interaction_returns_only_its_messages(
+        self, search_index: SearchIndex
+    ) -> None:
+        """get_interaction should return only messages belonging to that interaction."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "First question"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "First answer"}},
+            {"uuid": "msg-3", "message": {"role": "user", "content": "Second question"}},
+            {"uuid": "msg-4", "message": {"role": "assistant", "content": "Second answer"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        # Get the first interaction
+        interaction = search_index.get_interaction("session-1-interaction-0")
+
+        assert interaction is not None
+        assert len(interaction["messages"]) == 2
+        message_ids = [m["message_id"] for m in interaction["messages"]]
+        assert "msg-1" in message_ids
+        assert "msg-2" in message_ids
+        # Should NOT include messages from the second interaction
+        assert "msg-3" not in message_ids
+        assert "msg-4" not in message_ids
+
+    def test_search_interactions_finds_correct_interaction(
+        self, search_index: SearchIndex
+    ) -> None:
+        """search_interactions should find the interaction containing the matching message."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "Hello world"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "Hi there"}},
+            {"uuid": "msg-3", "message": {"role": "user", "content": "Python programming"}},
+            {"uuid": "msg-4", "message": {"role": "assistant", "content": "Great topic!"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        # Search for "Python" - should find interaction 1 (msg-3, msg-4)
+        results = search_index.search_interactions("Python")
+
+        assert len(results) == 1
+        assert results[0]["interaction_id"] == "session-1-interaction-1"
+        assert results[0]["match_message_id"] == "msg-3"
+
+    def test_message_interactions_junction_populated(
+        self, search_index: SearchIndex
+    ) -> None:
+        """Junction table should be populated during indexing."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "Question"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "Answer"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        # Directly query junction table
+        result = search_index.conn.execute(
+            "SELECT COUNT(*) FROM message_interactions"
+        ).fetchone()
+
+        assert result is not None
+        assert result[0] == 2  # Both messages should be mapped

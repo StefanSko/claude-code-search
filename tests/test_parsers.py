@@ -482,3 +482,37 @@ class TestCommitExtraction:
 
         assert result.tool_summary is not None
         assert "f1e2d3c" in result.tool_summary or "commit" in result.tool_summary.lower()
+
+    def test_extract_commit_intent_from_heredoc(self) -> None:
+        """Extract commit message from HEREDOC-style git commit command."""
+        heredoc_command = '''git commit -m "$(cat <<'EOF'
+feat: add hierarchical search results
+
+This commit adds support for grouping messages into interactions.
+
+🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+EOF
+)"'''
+        raw = {
+            "uuid": "msg-007",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "tool-007",
+                        "name": "Bash",
+                        "input": {"command": heredoc_command},
+                    },
+                ],
+            },
+        }
+
+        result = parse_message(raw, "session-1", 6)
+
+        assert len(result.tool_usages) == 1
+        tool = result.tool_usages[0]
+        assert tool.commit_intent is not None
+        assert tool.commit_intent == "feat: add hierarchical search results"
