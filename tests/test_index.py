@@ -12,15 +12,11 @@ class TestSearchIndex:
         """New index should be empty."""
         assert search_index.is_empty()
 
-    def test_is_not_empty_after_indexing(
-        self, indexed_search: SearchIndex
-    ) -> None:
+    def test_is_not_empty_after_indexing(self, indexed_search: SearchIndex) -> None:
         """Index should not be empty after adding sessions."""
         assert not indexed_search.is_empty()
 
-    def test_index_session(
-        self, search_index: SearchIndex, sample_messages: list[dict]
-    ) -> None:
+    def test_index_session(self, search_index: SearchIndex, sample_messages: list[dict]) -> None:
         """Index a session and verify it's stored."""
         search_index.index_session(
             session_id="test-session",
@@ -56,9 +52,7 @@ class TestSearchIndex:
 
         assert all(r["role"] == "user" for r in results)
 
-    def test_search_returns_empty_for_no_match(
-        self, indexed_search: SearchIndex
-    ) -> None:
+    def test_search_returns_empty_for_no_match(self, indexed_search: SearchIndex) -> None:
         """Search should return empty for non-matching query."""
         results = indexed_search.search("xyznonexistent123")
 
@@ -89,9 +83,7 @@ class TestSearchIndex:
 
     def test_get_message_with_context(self, indexed_search: SearchIndex) -> None:
         """Get a message with surrounding context."""
-        result = indexed_search.get_message_with_context(
-            "msg-002", before=1, after=1
-        )
+        result = indexed_search.get_message_with_context("msg-002", before=1, after=1)
 
         assert result is not None
         assert result["message"]["message_id"] == "msg-002"
@@ -118,9 +110,7 @@ class TestSearchIndexMultipleSessions:
         stats = search_index.get_stats()
         assert stats["session_count"] == 2
 
-    def test_search_across_sessions(
-        self, search_index: SearchIndex
-    ) -> None:
+    def test_search_across_sessions(self, search_index: SearchIndex) -> None:
         """Search should find results across all sessions."""
         messages_1 = [
             {"uuid": "s1-msg-1", "message": {"role": "user", "content": "Create Python CLI"}}
@@ -149,7 +139,12 @@ class TestContentTypeFilter:
                 "message": {
                     "role": "assistant",
                     "content": [
-                        {"type": "tool_use", "id": "t1", "name": "Write", "input": {"path": "python.py"}},
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Write",
+                            "input": {"path": "python.py"},
+                        },
                     ],
                 },
             },
@@ -170,7 +165,12 @@ class TestContentTypeFilter:
                 "message": {
                     "role": "assistant",
                     "content": [
-                        {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "npm install"}},
+                        {
+                            "type": "tool_use",
+                            "id": "t1",
+                            "name": "Bash",
+                            "input": {"command": "npm install"},
+                        },
                     ],
                 },
                 # Add thinking content so it's searchable
@@ -247,3 +247,87 @@ class TestContextWithToolSummary:
             assert result is not None
             context_ids = [m["message_id"] for m in result["context"]]
             assert msg_id in context_ids
+
+
+class TestInteractionQueries:
+    """Tests for interaction-related queries using junction table."""
+
+    def test_get_interactions_returns_correct_messages(
+        self, search_index: SearchIndex
+    ) -> None:
+        """get_interactions should return interactions with message IDs from junction table."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "First question"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "First answer"}},
+            {"uuid": "msg-3", "message": {"role": "user", "content": "Second question"}},
+            {"uuid": "msg-4", "message": {"role": "assistant", "content": "Second answer"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        interactions = search_index.get_interactions("session-1")
+
+        assert len(interactions) == 2
+        # Each interaction should have message_ids populated via junction table
+        assert interactions[0]["message_ids"] is not None
+        assert interactions[1]["message_ids"] is not None
+
+    def test_get_interaction_returns_only_its_messages(
+        self, search_index: SearchIndex
+    ) -> None:
+        """get_interaction should return only messages belonging to that interaction."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "First question"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "First answer"}},
+            {"uuid": "msg-3", "message": {"role": "user", "content": "Second question"}},
+            {"uuid": "msg-4", "message": {"role": "assistant", "content": "Second answer"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        # Get the first interaction
+        interaction = search_index.get_interaction("session-1-interaction-0")
+
+        assert interaction is not None
+        assert len(interaction["messages"]) == 2
+        message_ids = [m["message_id"] for m in interaction["messages"]]
+        assert "msg-1" in message_ids
+        assert "msg-2" in message_ids
+        # Should NOT include messages from the second interaction
+        assert "msg-3" not in message_ids
+        assert "msg-4" not in message_ids
+
+    def test_search_interactions_finds_correct_interaction(
+        self, search_index: SearchIndex
+    ) -> None:
+        """search_interactions should find the interaction containing the matching message."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "Hello world"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "Hi there"}},
+            {"uuid": "msg-3", "message": {"role": "user", "content": "Python programming"}},
+            {"uuid": "msg-4", "message": {"role": "assistant", "content": "Great topic!"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        # Search for "Python" - should find interaction 1 (msg-3, msg-4)
+        results = search_index.search_interactions("Python")
+
+        assert len(results) == 1
+        assert results[0]["interaction_id"] == "session-1-interaction-1"
+        assert results[0]["match_message_id"] == "msg-3"
+
+    def test_message_interactions_junction_populated(
+        self, search_index: SearchIndex
+    ) -> None:
+        """Junction table should be populated during indexing."""
+        messages = [
+            {"uuid": "msg-1", "message": {"role": "user", "content": "Question"}},
+            {"uuid": "msg-2", "message": {"role": "assistant", "content": "Answer"}},
+        ]
+        search_index.index_session("session-1", messages, "local")
+
+        # Directly query junction table
+        result = search_index.conn.execute(
+            "SELECT COUNT(*) FROM message_interactions"
+        ).fetchone()
+
+        assert result is not None
+        assert result[0] == 2  # Both messages should be mapped

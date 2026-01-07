@@ -9,7 +9,13 @@ from typing import Any
 
 import duckdb
 
-from claude_code_search.parsers import ParsedMessage, ToolUsage, parse_message
+from claude_code_search.parsers import (
+    Commit,
+    ParsedMessage,
+    ToolUsage,
+    group_messages_into_interactions,
+    parse_message,
+)
 
 SESSIONS_DDL = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -52,8 +58,50 @@ CREATE TABLE IF NOT EXISTS tool_usages (
     tool_result TEXT,
     is_error BOOLEAN DEFAULT FALSE,
     file_path VARCHAR,
-    command VARCHAR
+    command VARCHAR,
+    commit_intent VARCHAR
 )
+"""
+
+COMMITS_DDL = """
+CREATE TABLE IF NOT EXISTS commits (
+    commit_hash VARCHAR PRIMARY KEY,
+    session_id VARCHAR NOT NULL,
+    interaction_id VARCHAR,
+    message_id VARCHAR NOT NULL,
+    commit_message TEXT NOT NULL,
+    branch VARCHAR,
+    timestamp TIMESTAMP
+)
+"""
+
+INTERACTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS interactions (
+    interaction_id VARCHAR PRIMARY KEY,
+    session_id VARCHAR NOT NULL,
+    sequence_num INTEGER NOT NULL,
+    user_prompt TEXT,
+    timestamp TIMESTAMP,
+    has_thinking BOOLEAN DEFAULT FALSE,
+    total_cost_usd DOUBLE,
+    message_count INTEGER,
+    tool_count INTEGER,
+    commit_count INTEGER
+)
+"""
+
+MESSAGE_INTERACTIONS_DDL = """
+CREATE TABLE IF NOT EXISTS message_interactions (
+    message_id VARCHAR NOT NULL,
+    interaction_id VARCHAR NOT NULL,
+    PRIMARY KEY (message_id, interaction_id)
+)
+"""
+
+INDEXES_DDL = """
+CREATE INDEX IF NOT EXISTS idx_interactions_session ON interactions(session_id);
+CREATE INDEX IF NOT EXISTS idx_commits_session ON commits(session_id);
+CREATE INDEX IF NOT EXISTS idx_message_interactions_interaction ON message_interactions(interaction_id);
 """
 
 
@@ -71,6 +119,13 @@ class SearchIndex:
         self.conn.execute(SESSIONS_DDL)
         self.conn.execute(MESSAGES_DDL)
         self.conn.execute(TOOL_USAGES_DDL)
+        self.conn.execute(COMMITS_DDL)
+        self.conn.execute(INTERACTIONS_DDL)
+        self.conn.execute(MESSAGE_INTERACTIONS_DDL)
+        # Create indexes for efficient queries
+        for stmt in INDEXES_DDL.strip().split(";"):
+            if stmt.strip():
+                self.conn.execute(stmt)
 
     def is_empty(self) -> bool:
         """Check if the index has any sessions."""
@@ -80,7 +135,7 @@ class SearchIndex:
     def index_session(
         self,
         session_id: str,
-        messages: list[dict],
+        messages: list[dict[str, Any]],
         source: str = "local",
         session_path: str | None = None,
         project_directory: str | None = None,
@@ -88,17 +143,24 @@ class SearchIndex:
         """Index a single session with all its messages."""
         parsed_messages: list[ParsedMessage] = []
         all_tool_usages: list[ToolUsage] = []
+        all_commits: list[tuple[Commit, str]] = []  # (commit, message_id)
         total_cost = 0.0
 
         for seq, raw_msg in enumerate(messages):
             parsed = parse_message(raw_msg, session_id, seq)
             parsed_messages.append(parsed)
             all_tool_usages.extend(parsed.tool_usages)
+            # Collect commits with their message IDs
+            for commit in parsed.commits:
+                all_commits.append((commit, parsed.message_id))
             if parsed.cost_usd:
                 total_cost += parsed.cost_usd
 
         if not parsed_messages:
             return
+
+        # Group messages into interactions
+        interactions = group_messages_into_interactions(messages, session_id)
 
         first_ts = parsed_messages[0].timestamp
         last_ts = parsed_messages[-1].timestamp
@@ -153,8 +215,8 @@ class SearchIndex:
                 """
                 INSERT OR REPLACE INTO tool_usages
                 (tool_usage_id, message_id, session_id, tool_name,
-                 tool_input, tool_result, is_error, file_path, command)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 tool_input, tool_result, is_error, file_path, command, commit_intent)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     tool.tool_usage_id,
@@ -166,6 +228,67 @@ class SearchIndex:
                     tool.is_error,
                     tool.file_path,
                     tool.command,
+                    tool.commit_intent,
+                ],
+            )
+
+        # Insert interactions and message-interaction mappings
+        for interaction in interactions:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO interactions
+                (interaction_id, session_id, sequence_num, user_prompt, timestamp,
+                 has_thinking, total_cost_usd, message_count, tool_count, commit_count)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    interaction.interaction_id,
+                    interaction.session_id,
+                    interaction.sequence_num,
+                    interaction.user_prompt,
+                    interaction.timestamp,
+                    interaction.has_thinking,
+                    interaction.total_cost_usd,
+                    len(interaction.message_ids),
+                    len(interaction.tool_calls),
+                    len(interaction.commits),
+                ],
+            )
+
+            # Insert message-interaction mappings
+            for message_id in interaction.message_ids:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO message_interactions
+                    (message_id, interaction_id)
+                    VALUES (?, ?)
+                    """,
+                    [message_id, interaction.interaction_id],
+                )
+
+        # Insert commits with interaction linkage
+        commit_to_interaction: dict[str, str] = {}
+        for interaction in interactions:
+            for commit in interaction.commits:
+                commit_to_interaction[commit.commit_hash] = interaction.interaction_id
+
+        for commit, message_id in all_commits:
+            interaction_id = commit_to_interaction.get(commit.commit_hash)
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO commits
+                (commit_hash, session_id, interaction_id, message_id,
+                 commit_message, branch, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    commit.commit_hash,
+                    session_id,
+                    interaction_id,
+                    message_id,
+                    commit.commit_message,
+                    commit.branch,
+                    commit.timestamp,
                 ],
             )
 
@@ -271,18 +394,17 @@ class SearchIndex:
 
     def get_stats(self) -> dict[str, Any]:
         """Get index statistics."""
-        session_count = self.conn.execute(
-            "SELECT COUNT(*) FROM sessions"
-        ).fetchone()[0]
-        message_count = self.conn.execute(
-            "SELECT COUNT(*) FROM messages"
-        ).fetchone()[0]
-        tool_count = self.conn.execute(
-            "SELECT COUNT(*) FROM tool_usages"
-        ).fetchone()[0]
-        total_cost = self.conn.execute(
+        session_result = self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        message_result = self.conn.execute("SELECT COUNT(*) FROM messages").fetchone()
+        tool_result = self.conn.execute("SELECT COUNT(*) FROM tool_usages").fetchone()
+        cost_result = self.conn.execute(
             "SELECT COALESCE(SUM(total_cost_usd), 0) FROM sessions"
-        ).fetchone()[0]
+        ).fetchone()
+
+        session_count = session_result[0] if session_result else 0
+        message_count = message_result[0] if message_result else 0
+        tool_count = tool_result[0] if tool_result else 0
+        total_cost = cost_result[0] if cost_result else 0
 
         date_range = self.conn.execute(
             """
@@ -390,6 +512,164 @@ class SearchIndex:
             "message": msg,
             "context": context_messages,
         }
+
+    def get_interactions(self, session_id: str, limit: int | None = None) -> list[dict[str, Any]]:
+        """Get all interactions for a session."""
+        sql = """
+            SELECT i.*,
+                   GROUP_CONCAT(mi.message_id) as message_ids,
+                   GROUP_CONCAT(DISTINCT c.commit_hash) as commit_hashes
+            FROM interactions i
+            LEFT JOIN message_interactions mi ON mi.interaction_id = i.interaction_id
+            LEFT JOIN commits c ON c.interaction_id = i.interaction_id
+            WHERE i.session_id = ?
+            GROUP BY i.interaction_id, i.session_id, i.sequence_num, i.user_prompt,
+                     i.timestamp, i.has_thinking, i.total_cost_usd,
+                     i.message_count, i.tool_count, i.commit_count
+            ORDER BY i.sequence_num
+        """
+
+        params: list[Any] = [session_id]
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+
+        result = self.conn.execute(sql, params).fetchall()
+        columns = [desc[0] for desc in self.conn.description or []]
+        return [dict(zip(columns, row, strict=False)) for row in result]
+
+    def get_interaction(self, interaction_id: str) -> dict[str, Any] | None:
+        """Get a single interaction with all its messages."""
+        interaction_result = self.conn.execute(
+            "SELECT * FROM interactions WHERE interaction_id = ?", [interaction_id]
+        ).fetchone()
+
+        if not interaction_result:
+            return None
+
+        columns = [desc[0] for desc in self.conn.description or []]
+        interaction = dict(zip(columns, interaction_result, strict=False))
+
+        # Get messages that belong to this interaction via junction table
+        messages_result = self.conn.execute(
+            """
+            SELECT m.* FROM messages m
+            JOIN message_interactions mi ON mi.message_id = m.message_id
+            WHERE mi.interaction_id = ?
+            ORDER BY m.sequence_num
+            """,
+            [interaction_id],
+        ).fetchall()
+
+        msg_columns = [desc[0] for desc in self.conn.description or []]
+        interaction["messages"] = [
+            dict(zip(msg_columns, row, strict=False)) for row in messages_result
+        ]
+
+        # Get commits for this interaction
+        commits_result = self.conn.execute(
+            "SELECT * FROM commits WHERE interaction_id = ?", [interaction_id]
+        ).fetchall()
+
+        commit_columns = [desc[0] for desc in self.conn.description or []]
+        interaction["commits"] = [
+            dict(zip(commit_columns, row, strict=False)) for row in commits_result
+        ]
+
+        return interaction
+
+    def search_interactions(
+        self,
+        query: str,
+        session_id: str | None = None,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Search for interactions matching a query.
+
+        Returns interactions where the query matches in:
+        - User prompt
+        - Any message text in the interaction
+        - Tool names or parameters
+        - Commit messages
+        """
+        # First, find matching messages using FTS
+        message_matches = self.search(
+            query=query,
+            session_id=session_id,
+            limit=limit * 5,  # Get more messages to dedupe by interaction
+        )
+
+        # Group by interaction and get unique interactions
+        interaction_map: dict[str, dict[str, Any]] = {}
+
+        for msg in message_matches:
+            message_id = msg["message_id"]
+
+            # Find the interaction this message belongs to via junction table
+            interaction_result = self.conn.execute(
+                """
+                SELECT i.* FROM interactions i
+                JOIN message_interactions mi ON mi.interaction_id = i.interaction_id
+                WHERE mi.message_id = ?
+                """,
+                [message_id],
+            ).fetchone()
+
+            if not interaction_result:
+                continue
+
+            columns = [desc[0] for desc in self.conn.description or []]
+            interaction = dict(zip(columns, interaction_result, strict=False))
+            int_id = interaction["interaction_id"]
+
+            # Track the best (highest scoring) match for each interaction
+            msg_score = msg.get("score", 0)
+            if int_id not in interaction_map or msg_score > interaction_map[int_id].get(
+                "score", 0
+            ):
+                interaction["match_message_id"] = message_id
+                interaction["match_type"] = msg["content_type"]
+                interaction["score"] = msg_score
+                interaction_map[int_id] = interaction
+
+        # Convert to list and sort by score
+        results = list(interaction_map.values())
+        results.sort(key=lambda x: x.get("score", 0), reverse=True)
+        return results[:limit]
+
+    def get_commit(self, commit_hash: str) -> dict[str, Any] | None:
+        """Get commit details by hash."""
+        result = self.conn.execute(
+            "SELECT * FROM commits WHERE commit_hash = ?", [commit_hash]
+        ).fetchone()
+
+        if not result:
+            return None
+
+        columns = [desc[0] for desc in self.conn.description or []]
+        return dict(zip(columns, result, strict=False))
+
+    def search_commits(
+        self, query: str, session_id: str | None = None, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """Search commits by hash or message."""
+        sql = """
+            SELECT * FROM commits
+            WHERE commit_hash LIKE ? OR commit_message LIKE ?
+        """
+        like_query = f"%{query}%"
+        params: list[Any] = [like_query, like_query]
+
+        if session_id:
+            sql += " AND session_id = ?"
+            params.append(session_id)
+
+        sql += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        result = self.conn.execute(sql, params).fetchall()
+        columns = [desc[0] for desc in self.conn.description or []]
+        return [dict(zip(columns, row, strict=False)) for row in result]
 
     def close(self) -> None:
         """Close the database connection."""

@@ -25,9 +25,26 @@
                     Claude Code Search
                 </h1>
                 <div class="flex gap-2">
+                    <!-- View Toggle -->
+                    <div class="flex border border-gray-600 rounded overflow-hidden">
+                        <button @click="viewMode = 'messages'"
+                                :class="viewMode === 'messages'
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                                class="px-3 py-1.5 text-sm">
+                            Messages
+                        </button>
+                        <button @click="viewMode = 'interactions'"
+                                :class="viewMode === 'interactions'
+                                        ? 'bg-blue-600 text-white'
+                                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'"
+                                class="px-3 py-1.5 text-sm">
+                            Interactions
+                        </button>
+                    </div>
                     <button @click="exportResults()"
                             class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-sm"
-                            :disabled="results.length === 0">
+                            :disabled="currentResults.length === 0">
                         Export
                     </button>
                     <button @click="showStatsModal = true"
@@ -44,13 +61,15 @@
                 <input
                     type="text"
                     x-model="query"
-                    @keyup.enter="search()"
-                    @input.debounce.300ms="search()"
-                    placeholder="Search across all sessions..."
+                    @keyup.enter="performSearch()"
+                    @input.debounce.300ms="performSearch()"
+                    :placeholder="viewMode === 'interactions'
+                                  ? 'Search interactions...'
+                                  : 'Search across all sessions...'"
                     class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2
                            focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                 >
-                <button @click="search()"
+                <button @click="performSearch()"
                         class="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium">
                     Search
                 </button>
@@ -163,15 +182,15 @@
                 </div>
 
                 <!-- Empty State -->
-                <div x-show="!loading && query && results.length === 0"
+                <div x-show="!loading && query && currentResults.length === 0"
                      class="text-center py-12 text-gray-400">
                     <p>No results found for "<span x-text="query"></span>"</p>
                 </div>
 
-                <!-- Results List -->
-                <div x-show="!loading && results.length > 0" class="space-y-3">
+                <!-- Message Results -->
+                <div x-show="!loading && viewMode === 'messages' && results.length > 0" class="space-y-3">
                     <p class="text-sm text-gray-400 mb-4">
-                        Found <span x-text="results.length" class="font-semibold text-white"></span> results
+                        Found <span x-text="results.length" class="font-semibold text-white"></span> messages
                     </p>
 
                     <template x-for="result in results" :key="result.message_id">
@@ -202,6 +221,73 @@
                                class="mt-2 text-xs text-gray-500">
                                 📁 <span x-text="result.project_directory"></span>
                             </p>
+                        </div>
+                    </template>
+                </div>
+
+                <!-- Interaction Results -->
+                <div x-show="!loading && viewMode === 'interactions' && interactions.length > 0"
+                     class="space-y-3">
+                    <p class="text-sm text-gray-400 mb-4">
+                        Found <span x-text="interactions.length"
+                                    class="font-semibold text-white"></span> interactions
+                    </p>
+
+                    <template x-for="interaction in interactions" :key="interaction.interaction_id">
+                        <div @click="showInteraction(interaction)"
+                             class="result-card bg-gray-800 rounded-lg p-4 cursor-pointer
+                                    border border-gray-700 hover:border-blue-400 transition-colors">
+                            <!-- Interaction Header -->
+                            <div class="flex items-center gap-2 mb-2 flex-wrap">
+                                <span class="text-xs font-mono text-cyan-400"
+                                      x-text="interaction.session_id?.slice(0, 12)"></span>
+                                <span class="text-xs text-gray-500"
+                                      x-text="formatDate(interaction.timestamp)"></span>
+                                <span x-show="interaction.has_thinking"
+                                      class="text-xs px-1.5 py-0.5 bg-indigo-900 text-indigo-300 rounded">
+                                    💭
+                                </span>
+                                <span x-show="interaction.total_cost_usd > 0"
+                                      class="text-xs text-gray-500 ml-auto">
+                                    $<span x-text="interaction.total_cost_usd?.toFixed(4)"></span>
+                                </span>
+                            </div>
+
+                            <!-- User Prompt -->
+                            <div class="mb-2">
+                                <span class="text-xs px-2 py-0.5 rounded font-medium
+                                             bg-green-900 text-green-300 mr-2">
+                                    Prompt
+                                </span>
+                                <p class="text-sm mt-1 line-clamp-2 text-gray-300"
+                                   x-html="highlightMatches(interaction.user_prompt?.slice(0, 200) || '(no prompt)', query)">
+                                </p>
+                            </div>
+
+                            <!-- Match Locations -->
+                            <div x-show="interaction.match_locations?.length > 0"
+                                 class="flex gap-1 flex-wrap mb-2">
+                                <template x-for="loc in interaction.match_locations" :key="loc.message_id">
+                                    <span class="text-xs px-1.5 py-0.5 bg-yellow-900 text-yellow-300 rounded"
+                                          x-text="loc.type"></span>
+                                </template>
+                            </div>
+
+                            <!-- Tools and Commits -->
+                            <div class="flex gap-2 flex-wrap">
+                                <template x-for="tool in interaction.tool_calls" :key="tool">
+                                    <span class="text-xs px-2 py-0.5 bg-purple-900 text-purple-300 rounded"
+                                          x-text="tool"></span>
+                                </template>
+                                <template x-for="commit in interaction.commits" :key="commit.commit_hash">
+                                    <span class="text-xs px-2 py-0.5 bg-blue-900 text-blue-300 rounded
+                                                 font-mono flex items-center gap-1"
+                                          @click.stop="copyCommitHash(commit.commit_hash)"
+                                          title="Click to copy">
+                                        📝 <span x-text="commit.commit_hash.slice(0, 7)"></span>
+                                    </span>
+                                </template>
+                            </div>
                         </div>
                     </template>
                 </div>
@@ -306,6 +392,159 @@
             </div>
         </div>
 
+        <!-- Interaction Modal -->
+        <div x-show="selectedInteraction"
+             x-cloak
+             @keydown.escape.window="selectedInteraction = null"
+             @keydown.arrow-left.window="navigateInteraction(-1)"
+             @keydown.arrow-right.window="navigateInteraction(1)"
+             class="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center p-4 z-50">
+            <div @click.outside="selectedInteraction = null"
+                 class="bg-gray-800 rounded-lg max-w-5xl w-full max-h-[90vh] overflow-hidden flex flex-col">
+                <!-- Modal Header -->
+                <div class="flex items-center justify-between px-6 py-4 border-b border-gray-700">
+                    <div class="flex items-center gap-3">
+                        <span class="text-sm font-mono text-cyan-400"
+                              x-text="selectedInteractionData?.interaction?.session_id?.slice(0, 12)"></span>
+                        <span class="text-sm text-gray-400"
+                              x-text="formatDate(selectedInteractionData?.interaction?.timestamp)"></span>
+                        <span x-show="selectedInteractionData?.interaction?.has_thinking"
+                              class="text-xs px-1.5 py-0.5 bg-indigo-900 text-indigo-300 rounded">
+                            💭 Thinking
+                        </span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <button @click="navigateInteraction(-1)"
+                                :disabled="currentInteractionIndex <= 0"
+                                :class="currentInteractionIndex <= 0
+                                        ? 'text-gray-600 cursor-not-allowed'
+                                        : 'text-gray-400 hover:text-white'"
+                                class="px-3 py-1 text-xl">
+                            ◀
+                        </button>
+                        <button @click="navigateInteraction(1)"
+                                :disabled="currentInteractionIndex >= interactions.length - 1"
+                                :class="currentInteractionIndex >= interactions.length - 1
+                                        ? 'text-gray-600 cursor-not-allowed'
+                                        : 'text-gray-400 hover:text-white'"
+                                class="px-3 py-1 text-xl">
+                                ▶
+                        </button>
+                        <button @click="selectedInteraction = null"
+                                class="text-gray-400 hover:text-white text-2xl ml-2">
+                            ×
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Modal Content -->
+                <div class="flex-1 overflow-y-auto p-6 space-y-4">
+                    <!-- User Prompt -->
+                    <div class="bg-gray-900 border border-green-700 rounded-lg p-4">
+                        <div class="flex items-center gap-2 mb-2">
+                            <span class="px-2 py-0.5 rounded text-xs font-medium
+                                         bg-green-900 text-green-300">
+                                User Prompt
+                            </span>
+                        </div>
+                        <pre class="whitespace-pre-wrap text-sm text-gray-200"
+                             x-text="selectedInteractionData?.interaction?.user_prompt || '(no prompt)'"></pre>
+                    </div>
+
+                    <!-- Messages -->
+                    <template x-for="msg in selectedInteractionData?.messages || []" :key="msg.message_id">
+                        <div class="border border-gray-700 rounded-lg p-4 bg-gray-800">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="px-2 py-0.5 rounded text-xs font-medium"
+                                      :class="msg.role === 'user'
+                                              ? 'bg-green-900 text-green-300'
+                                              : 'bg-purple-900 text-purple-300'"
+                                      x-text="msg.role"></span>
+                                <span class="text-xs text-gray-500" x-text="formatDate(msg.timestamp)"></span>
+                                <span x-show="msg.content_type && msg.content_type !== 'text'"
+                                      class="text-xs px-2 py-0.5 bg-yellow-900 text-yellow-300 rounded"
+                                      x-text="msg.content_type"></span>
+                                <span x-show="msg.cost_usd" class="text-xs text-gray-500 ml-auto">
+                                    $<span x-text="msg.cost_usd?.toFixed(4)"></span>
+                                </span>
+                            </div>
+
+                            <!-- Thinking (collapsed by default) -->
+                            <div x-show="msg.thinking_content"
+                                 x-data="{ showThinking: false }"
+                                 class="mb-2">
+                                <button @click="showThinking = !showThinking"
+                                        class="text-xs text-gray-400 hover:text-gray-300">
+                                    💭 Thinking <span x-text="showThinking ? '▼' : '▶'"></span>
+                                </button>
+                                <div x-show="showThinking"
+                                     class="mt-2 p-2 bg-gray-900 rounded text-sm text-gray-400 italic">
+                                    <pre class="whitespace-pre-wrap" x-text="msg.thinking_content"></pre>
+                                </div>
+                            </div>
+
+                            <!-- Text Content -->
+                            <div x-show="msg.text_content?.trim()" class="mb-2">
+                                <pre class="whitespace-pre-wrap text-sm text-gray-200"
+                                     x-text="msg.text_content"></pre>
+                            </div>
+
+                            <!-- Tool Summary -->
+                            <div x-show="msg.tool_summary && !msg.text_content?.trim()"
+                                 class="text-yellow-400 italic text-sm">
+                                <span x-text="msg.tool_summary"></span>
+                            </div>
+                        </div>
+                    </template>
+
+                    <!-- Commits Section -->
+                    <div x-show="selectedInteractionData?.commits?.length > 0"
+                         class="bg-blue-950 border border-blue-700 rounded-lg p-4">
+                        <h3 class="text-sm font-semibold text-blue-300 mb-2">
+                            📝 Commits
+                        </h3>
+                        <div class="space-y-2">
+                            <template x-for="commit in selectedInteractionData?.commits || []"
+                                      :key="commit.commit_hash">
+                                <div class="flex items-start gap-3">
+                                    <code class="text-xs font-mono px-2 py-1 bg-blue-900 text-blue-200 rounded
+                                                cursor-pointer hover:bg-blue-800"
+                                          @click="copyCommitHash(commit.commit_hash)"
+                                          title="Click to copy"
+                                          x-text="commit.commit_hash"></code>
+                                    <div class="flex-1">
+                                        <p class="text-sm text-gray-300" x-text="commit.commit_message"></p>
+                                        <p class="text-xs text-gray-500">
+                                            <span x-text="commit.branch"></span>
+                                        </p>
+                                    </div>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Modal Footer -->
+                <div class="px-6 py-4 border-t border-gray-700 flex justify-between items-center">
+                    <div class="text-xs text-gray-400">
+                        <span x-text="selectedInteractionData?.interaction?.message_count || 0"></span> messages,
+                        <span x-text="selectedInteractionData?.interaction?.tool_count || 0"></span> tools,
+                        <span x-text="selectedInteractionData?.commits?.length || 0"></span> commits
+                    </div>
+                    <div class="flex gap-2">
+                        <button @click="copyInteraction()"
+                                class="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm">
+                            Copy All
+                        </button>
+                        <button @click="selectedInteraction = null"
+                                class="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded text-sm">
+                            Close
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Stats Modal -->
         <div x-show="showStatsModal"
              x-cloak
@@ -353,7 +592,9 @@
         function searchApp() {
             return {
                 query: '',
+                viewMode: 'interactions',  // 'messages' or 'interactions'
                 results: [],
+                interactions: [],
                 filters: {
                     role: '',
                     contentType: '',
@@ -362,8 +603,15 @@
                 sessions: [],
                 stats: {},
                 selectedMessage: null,
+                selectedInteraction: null,
+                selectedInteractionData: null,
+                currentInteractionIndex: -1,
                 showStatsModal: false,
                 loading: false,
+
+                get currentResults() {
+                    return this.viewMode === 'interactions' ? this.interactions : this.results;
+                },
 
                 async init() {
                     try {
@@ -371,6 +619,14 @@
                         this.sessions = await fetch('/api/sessions').then(r => r.json());
                     } catch (e) {
                         console.error('Failed to load initial data:', e);
+                    }
+                },
+
+                async performSearch() {
+                    if (this.viewMode === 'interactions') {
+                        await this.searchInteractions();
+                    } else {
+                        await this.search();
                     }
                 },
 
@@ -403,6 +659,29 @@
                     this.loading = false;
                 },
 
+                async searchInteractions() {
+                    if (!this.query.trim()) {
+                        this.interactions = [];
+                        return;
+                    }
+
+                    this.loading = true;
+                    try {
+                        const params = new URLSearchParams({ q: this.query });
+                        if (this.filters.sessions.length === 1) {
+                            params.set('session', this.filters.sessions[0]);
+                        }
+
+                        const response = await fetch(`/api/search/interactions?${params}`);
+                        const data = await response.json();
+                        this.interactions = data.results || [];
+                    } catch (e) {
+                        console.error('Interaction search failed:', e);
+                        this.interactions = [];
+                    }
+                    this.loading = false;
+                },
+
                 async showMessage(result) {
                     try {
                         const response = await fetch(
@@ -411,6 +690,67 @@
                         this.selectedMessage = await response.json();
                     } catch (e) {
                         console.error('Failed to load message:', e);
+                    }
+                },
+
+                async showInteraction(interaction) {
+                    try {
+                        // Find index for navigation
+                        this.currentInteractionIndex = this.interactions.findIndex(
+                            i => i.interaction_id === interaction.interaction_id
+                        );
+
+                        // Fetch full interaction details
+                        const response = await fetch(`/api/interaction/${interaction.interaction_id}`);
+                        this.selectedInteractionData = await response.json();
+                        this.selectedInteraction = interaction.interaction_id;
+                    } catch (e) {
+                        console.error('Failed to load interaction:', e);
+                    }
+                },
+
+                async navigateInteraction(direction) {
+                    const newIndex = this.currentInteractionIndex + direction;
+                    if (newIndex >= 0 && newIndex < this.interactions.length) {
+                        await this.showInteraction(this.interactions[newIndex]);
+                    }
+                },
+
+                async copyCommitHash(hash) {
+                    try {
+                        await navigator.clipboard.writeText(hash);
+                        // Could add a toast notification here
+                        console.log('Copied commit hash:', hash);
+                    } catch (e) {
+                        console.error('Failed to copy commit hash:', e);
+                    }
+                },
+
+                async copyInteraction() {
+                    if (!this.selectedInteractionData) return;
+                    try {
+                        let text = `User Prompt:\n${this.selectedInteractionData.interaction.user_prompt}\n\n`;
+
+                        for (const msg of this.selectedInteractionData.messages || []) {
+                            text += `\n[${msg.role}] ${this.formatDate(msg.timestamp)}\n`;
+                            if (msg.text_content) {
+                                text += msg.text_content + '\n';
+                            }
+                            if (msg.tool_summary) {
+                                text += `(${msg.tool_summary})\n`;
+                            }
+                        }
+
+                        if (this.selectedInteractionData.commits?.length > 0) {
+                            text += '\n\nCommits:\n';
+                            for (const commit of this.selectedInteractionData.commits) {
+                                text += `${commit.commit_hash}: ${commit.commit_message}\n`;
+                            }
+                        }
+
+                        await navigator.clipboard.writeText(text);
+                    } catch (e) {
+                        console.error('Failed to copy interaction:', e);
                     }
                 },
 

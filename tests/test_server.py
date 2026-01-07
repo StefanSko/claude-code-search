@@ -89,10 +89,7 @@ class TestAPIEndpoints:
 
     def test_get_message_with_context(self, client: TestClient) -> None:
         """Get message with surrounding context."""
-        response = client.get(
-            "/api/messages/msg-002/context",
-            params={"before": 1, "after": 1}
-        )
+        response = client.get("/api/messages/msg-002/context", params={"before": 1, "after": 1})
 
         assert response.status_code == 200
         data = response.json()

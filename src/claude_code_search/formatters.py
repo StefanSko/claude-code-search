@@ -50,9 +50,7 @@ def display_results(
         if len(r.get("text_content", "")) > 500:
             content += "..."
 
-        console.print(
-            Panel(Markdown(content), title=header, border_style="blue")
-        )
+        console.print(Panel(Markdown(content), title=header, border_style="blue"))
 
 
 def display_stats(stats: dict[str, Any], console: Console | None = None) -> None:
